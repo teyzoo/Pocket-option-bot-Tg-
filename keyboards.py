@@ -3,276 +3,216 @@ from __future__ import annotations
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-)
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-
-from config import (
-    MAX_EXPIRY_MINUTES,
-    MIN_EXPIRY_MINUTES,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
 )
 
 
-def main_keyboard() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-
-    builder.row(
-        InlineKeyboardButton(
-            text="🎯 Получить сигнал",
-            callback_data="signal:start",
-        )
+def main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="📡 Получить сигнал"),
+                KeyboardButton(text="📜 История"),
+            ],
+            [
+                KeyboardButton(text="📊 Статистика"),
+                KeyboardButton(text="⚙️ Настройки"),
+            ],
+        ],
+        resize_keyboard=True,
     )
 
-    builder.row(
-        InlineKeyboardButton(
-            text="📊 История",
-            callback_data="history",
-        ),
-        InlineKeyboardButton(
-            text="📈 Статистика",
-            callback_data="stats",
-        ),
+
+def pending_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="🔄 Проверить доступ"),
+            ],
+        ],
+        resize_keyboard=True,
     )
 
-    builder.row(
-        InlineKeyboardButton(
-            text="⚙️ Настройки",
-            callback_data="settings",
-        )
+
+def market_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💱 Обычный рынок",
+                    callback_data="market:regular",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🌙 OTC",
+                    callback_data="market:otc",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⚡ Любой рынок",
+                    callback_data="market:any",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data="signal:cancel",
+                ),
+            ],
+        ]
     )
 
-    return builder.as_markup()
 
-
-def pending_keyboard() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-
-    builder.row(
-        InlineKeyboardButton(
-            text="🔄 Проверить доступ",
-            callback_data="check_access",
-        )
-    )
-
-    return builder.as_markup()
-
-
-def signal_type_keyboard() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-
-    builder.row(
-        InlineKeyboardButton(
-            text="🌐 Обычные пары",
-            callback_data="signal_type:regular",
-        )
-    )
-
-    builder.row(
-        InlineKeyboardButton(
-            text="🟣 OTC",
-            callback_data="signal_type:otc",
-        )
-    )
-
-    builder.row(
-        InlineKeyboardButton(
-            text="🔀 Любая пара",
-            callback_data="signal_type:any",
-        )
-    )
-
-    builder.row(
-        InlineKeyboardButton(
-            text="◀️ Назад",
-            callback_data="main",
-        )
-    )
-
-    return builder.as_markup()
-
-
-def regular_pairs_keyboard(
+def pairs_keyboard(
     pairs: list[str],
 ) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
+    rows: list[list[InlineKeyboardButton]] = []
 
-    for index in range(0, len(pairs), 2):
-        row = pairs[index:index + 2]
-
-        buttons = []
-
-        for pair in row:
-            buttons.append(
+    for pair in pairs:
+        rows.append(
+            [
                 InlineKeyboardButton(
                     text=pair,
-                    callback_data=(
-                        f"pair:{pair}"
-                    ),
+                    callback_data=f"pair:{pair}",
                 )
-            )
-
-        builder.row(*buttons)
-
-    builder.row(
-        InlineKeyboardButton(
-            text="🔀 Любая обычная пара",
-            callback_data="pair:any_regular",
+            ]
         )
-    )
 
-    builder.row(
-        InlineKeyboardButton(
-            text="◀️ Назад",
-            callback_data="signal:start",
-        )
-    )
-
-    return builder.as_markup()
-
-
-def otc_pairs_keyboard(
-    pairs: list[str],
-) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-
-    if not pairs:
-        builder.row(
+    rows.append(
+        [
             InlineKeyboardButton(
-                text="⚠️ OTC недоступен",
-                callback_data="otc:unavailable",
+                text="⬅️ Назад",
+                callback_data="signal:back_market",
             )
-        )
-    else:
-        for index in range(0, len(pairs), 2):
-            row = pairs[index:index + 2]
-
-            builder.row(
-                *[
-                    InlineKeyboardButton(
-                        text=pair,
-                        callback_data=f"pair:{pair}",
-                    )
-                    for pair in row
-                ]
-            )
-
-        builder.row(
-            InlineKeyboardButton(
-                text="🔀 Любая OTC пара",
-                callback_data="pair:any_otc",
-            )
-        )
-
-    builder.row(
-        InlineKeyboardButton(
-            text="◀️ Назад",
-            callback_data="signal:start",
-        )
+        ]
     )
 
-    return builder.as_markup()
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
 
 
 def expiry_keyboard() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
+    rows: list[list[InlineKeyboardButton]] = []
 
-    values = range(
-        MIN_EXPIRY_MINUTES,
-        MAX_EXPIRY_MINUTES + 1,
-    )
+    row: list[InlineKeyboardButton] = []
 
-    row = []
-
-    for minutes in values:
+    for minute in range(1, 11):
         row.append(
             InlineKeyboardButton(
-                text=f"{minutes} мин",
-                callback_data=f"expiry:{minutes}",
+                text=f"{minute} мин.",
+                callback_data=f"expiry:{minute}",
             )
         )
 
-        if len(row) == 4:
-            builder.row(*row)
+        if len(row) == 5:
+            rows.append(row)
             row = []
 
     if row:
-        builder.row(*row)
+        rows.append(row)
 
-    builder.row(
-        InlineKeyboardButton(
-            text="⚡ Любое время",
-            callback_data="expiry:any",
+    row = []
+
+    for minute in range(11, 21):
+        row.append(
+            InlineKeyboardButton(
+                text=f"{minute} мин.",
+                callback_data=f"expiry:{minute}",
+            )
         )
+
+        if len(row) == 5:
+            rows.append(row)
+            row = []
+
+    if row:
+        rows.append(row)
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⚡ Любое время",
+                callback_data="expiry:any",
+            )
+        ]
     )
 
-    builder.row(
-        InlineKeyboardButton(
-            text="◀️ Назад",
-            callback_data="signal:start",
-        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data="signal:back_pair",
+            )
+        ]
     )
 
-    return builder.as_markup()
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
 
 
 def admin_request_keyboard(
     telegram_id: int,
 ) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-
-    builder.row(
-        InlineKeyboardButton(
-            text="✅ Одобрить",
-            callback_data=(
-                f"admin:approve:{telegram_id}"
-            ),
-        ),
-        InlineKeyboardButton(
-            text="❌ Отклонить",
-            callback_data=(
-                f"admin:reject:{telegram_id}"
-            ),
-        ),
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Одобрить",
+                    callback_data=f"admin:approve:{telegram_id}",
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отклонить",
+                    callback_data=f"admin:reject:{telegram_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🚫 В чёрный список",
+                    callback_data=f"admin:blacklist:{telegram_id}",
+                ),
+            ],
+        ]
     )
 
-    builder.row(
-        InlineKeyboardButton(
-            text="🚫 В чёрный список",
-            callback_data=(
-                f"admin:blacklist:{telegram_id}"
-            ),
-        )
-    )
 
-    return builder.as_markup()
-
-
-def blacklist_keyboard(
+def admin_user_keyboard(
     telegram_id: int,
+    blacklisted: bool = False,
 ) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-
-    builder.row(
-        InlineKeyboardButton(
-            text="🔓 Убрать из ЧС",
-            callback_data=(
-                f"admin:unblacklist:{telegram_id}"
-            ),
+    if blacklisted:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="♻️ Убрать из ЧС",
+                        callback_data=f"admin:unblacklist:{telegram_id}",
+                    )
+                ]
+            ]
         )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Одобрить",
+                    callback_data=f"admin:approve:{telegram_id}",
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отклонить",
+                    callback_data=f"admin:reject:{telegram_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🚫 В чёрный список",
+                    callback_data=f"admin:blacklist:{telegram_id}",
+                ),
+            ],
+        ]
     )
-
-    return builder.as_markup()
-
-
-def back_keyboard(
-    callback_data: str = "main",
-) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-
-    builder.row(
-        InlineKeyboardButton(
-            text="◀️ Назад",
-            callback_data=callback_data,
-        )
-    )
-
-    return builder.as_markup()
