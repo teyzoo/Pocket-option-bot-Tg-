@@ -2,218 +2,141 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 
 from aiogram import Bot
-from sqlalchemy import select
 
 from config import (
-    ADMIN_IDS,
-    AUTO_SIGNAL_MAX_PER_CYCLE,
-    AUTO_SIGNALS_ENABLED,
     AUTO_SIGNAL_INTERVAL_MINUTES,
-    MIN_SIGNAL_CONFIDENCE,
-    USER_STATUS_APPROVED,
+    AUTO_SIGNALS_ENABLED,
+    DEFAULT_EXPIRY_MINUTES,
 )
-from database import (
-    SessionLocal,
-    Signal,
-    SignalRecipient,
-    User,
-)
-from keyboards import main_keyboard
+from market import MarketClient
+from signal_engine import SignalEngine
 from signal_scanner import SignalScanner
+from signal_service import (
+    broadcast_signal,
+    save_signal,
+)
+from time_utils import utc_now
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(
+    "teyzoo.scheduler"
+)
 
 
 class SignalScheduler:
     def __init__(
         self,
         bot: Bot,
-        scanner: SignalScanner,
+        market: MarketClient,
+        engine: SignalEngine,
     ) -> None:
         self.bot = bot
-        self.scanner = scanner
-        self._task: asyncio.Task | None = None
-        self._running = False
+        self.market = market
+        self.engine = engine
 
-    async def start(self) -> None:
-        if self._running:
+        self.scanner = SignalScanner(
+            market,
+            engine,
+        )
+
+        self.running = True
+
+        self.last_signal_key: str | None = None
+
+    async def run(self) -> None:
+        if not AUTO_SIGNALS_ENABLED:
+            logger.info(
+                "Automatic signals disabled"
+            )
+
             return
 
-        self._running = True
-
-        self._task = asyncio.create_task(
-            self._loop()
-        )
-
-        logger.info(
-            "Signal scheduler started"
-        )
-
-    async def stop(self) -> None:
-        self._running = False
-
-        if self._task:
-            self._task.cancel()
-
+        while self.running:
             try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-
-            self._task = None
-
-        logger.info(
-            "Signal scheduler stopped"
-        )
-
-    async def _loop(self) -> None:
-        while self._running:
-            try:
-                if AUTO_SIGNALS_ENABLED:
-                    await self.run_cycle()
-
-            except asyncio.CancelledError:
-                raise
-
+                await self.run_cycle()
             except Exception:
                 logger.exception(
-                    "Ошибка автоматического сканирования"
+                    "Scheduler cycle failed"
                 )
 
             await asyncio.sleep(
-                AUTO_SIGNAL_INTERVAL_MINUTES * 60
+                AUTO_SIGNAL_INTERVAL_MINUTES
+                * 60
             )
 
     async def run_cycle(self) -> None:
-        sent = 0
+        candidate = await self.scanner.scan(
+            market="regular",
+            expiry_minutes=(
+                DEFAULT_EXPIRY_MINUTES
+            ),
+            source="auto",
+        )
 
-        # Автоматический режим использует фиксированную
-        # экспирацию, если пользователь не выбирал её.
-        expiry = 5
+        if candidate is None:
+            logger.info(
+                "No qualifying signal"
+            )
+            return
 
-        while sent < AUTO_SIGNAL_MAX_PER_CYCLE:
-            signal = await self.scanner.scan(
-                expiry_minutes=expiry,
-                source="auto",
+        key = (
+            f"{candidate.pair}:"
+            f"{candidate.direction}:"
+            f"{candidate.expiry_minutes}"
+        )
+
+        if key == self.last_signal_key:
+            logger.info(
+                "Duplicate signal skipped"
+            )
+            return
+
+        self.last_signal_key = key
+
+        from chart_generator import (
+            chart_generator,
+        )
+
+        try:
+            from market import MarketClient
+
+            df = await self.market.get_candles(
+                candidate.pair,
+                interval="1min",
+                outputsize=120,
             )
 
-            if not signal:
-                return
-
-            if (
-                signal.confidence
-                < MIN_SIGNAL_CONFIDENCE
-            ):
-                return
-
-            await self._save_and_broadcast(
-                signal
+            from candle_filter import (
+                candle_filter,
             )
 
-            sent += 1
-
-    async def _save_and_broadcast(
-        self,
-        candidate,
-    ) -> None:
-        async with SessionLocal() as session:
-            db_signal = Signal(
-                pair=candidate.pair,
-                direction=candidate.direction,
-                expiry_minutes=candidate.expiry_minutes,
-                confidence=candidate.confidence,
-                quality=candidate.quality,
-                entry_price=candidate.entry_price,
-                result="pending",
-                source=candidate.source,
-                reasons=" | ".join(
-                    candidate.reasons
-                ),
-                created_at=candidate.created_at,
-                expires_at=candidate.expires_at,
+            df = candle_filter.apply(
+                df
             )
 
-            session.add(db_signal)
-            await session.commit()
-            await session.refresh(db_signal)
-
-            result = await session.execute(
-                select(User.telegram_id).where(
-                    User.status == USER_STATUS_APPROVED,
-                    User.is_auto_signals_enabled.is_(True),
+            candidate.chart_path = (
+                chart_generator.generate(
+                    df,
+                    candidate,
                 )
             )
 
-            users = list(result.scalars().all())
+        except Exception:
+            candidate.chart_path = None
 
-            for telegram_id in users:
-                text = self._format_signal(
-                    candidate
-                )
-
-                try:
-                    message = await self.bot.send_message(
-                        telegram_id,
-                        text,
-                        reply_markup=main_keyboard(),
-                    )
-
-                    recipient = SignalRecipient(
-                        signal_id=db_signal.id,
-                        telegram_id=telegram_id,
-                        message_id=message.message_id,
-                    )
-
-                    session.add(recipient)
-
-                except Exception as exc:
-                    logger.warning(
-                        "Не удалось отправить сигнал "
-                        "пользователю %s: %s",
-                        telegram_id,
-                        exc,
-                    )
-
-            await session.commit()
-
-    @staticmethod
-    def _format_signal(
-        signal,
-    ) -> str:
-        direction = (
-            "🟢 ВВЕРХ ⬆️"
-            if signal.direction == "UP"
-            else "🔴 ВНИЗ ⬇️"
+        signal = await save_signal(
+            candidate
         )
 
-        reasons = "\n".join(
-            f"• {reason}"
-            for reason in signal.reasons[:6]
+        sent = await broadcast_signal(
+            self.bot,
+            signal,
         )
 
-        close_time = signal.expires_at.astimezone(
-            timezone.utc
-        ).strftime("%H:%M:%S")
-
-        return (
-            "🚨 <b>НОВЫЙ СИГНАЛ</b>\n\n"
-            f"💱 Пара: <b>{signal.pair}</b>\n"
-            f"📊 Направление: <b>{direction}</b>\n"
-            f"⏱ Экспирация: "
-            f"<b>{signal.expiry_minutes} мин</b>\n"
-            f"🕐 Закрытие: <b>{close_time} UTC</b>\n\n"
-            f"🎯 Уверенность: "
-            f"<b>{signal.confidence:.1f}%</b>\n"
-            f"⭐ Качество: "
-            f"<b>{signal.quality:.1f}%</b>\n"
-            f"💵 Цена входа: "
-            f"<b>{signal.entry_price:.5f}</b>\n\n"
-            "<b>Подтверждения:</b>\n"
-            f"{reasons}\n\n"
-            "⚠️ Сигнал является аналитическим "
-            "прогнозом и не гарантирует прибыль."
+        logger.info(
+            "Auto signal %s sent to %s users",
+            signal.id,
+            sent,
         )
