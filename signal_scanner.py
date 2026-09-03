@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import asyncio
-import random
+from typing import Iterable
 
+from candle_filter import candle_filter
 from config import (
-    POCKET_OPTION_REGULAR_PAIRS,
-    SIGNAL_TYPE_ANY,
-    SIGNAL_TYPE_REGULAR,
+    MAX_CANDLES,
+    MIN_CANDLES_REQUIRED,
 )
-from market import MarketClient, MarketError
+from market import MarketClient
 from models import SignalCandidate
+from pair_selector import pair_selector
 from signal_engine import SignalEngine
 
 
@@ -22,95 +22,77 @@ class SignalScanner:
         self.market = market
         self.engine = engine
 
-    def get_available_pairs(
-        self,
-        market_type: str = SIGNAL_TYPE_REGULAR,
-    ) -> list[str]:
-        if market_type in {
-            SIGNAL_TYPE_REGULAR,
-            SIGNAL_TYPE_ANY,
-        }:
-            return list(
-                POCKET_OPTION_REGULAR_PAIRS
-            )
-
-        return []
-
     async def scan_pair(
         self,
         pair: str,
+        market: str,
         expiry_minutes: int,
         source: str = "manual",
     ) -> SignalCandidate | None:
-        try:
-            data = await self.market.get_candles(
-                pair,
-                interval="1min",
-            )
-        except MarketError:
+        if not pair_selector.is_allowed(
+            pair,
+            market,
+        ):
             return None
-        except Exception:
+
+        df = await self.market.get_candles(
+            pair,
+            interval="1min",
+            outputsize=MAX_CANDLES,
+        )
+
+        filtered = candle_filter.apply(df)
+
+        if len(filtered) < MIN_CANDLES_REQUIRED:
             return None
 
         return self.engine.analyze(
             pair=pair,
-            df=data,
+            market=market,
+            df=filtered,
             expiry_minutes=expiry_minutes,
             source=source,
         )
 
     async def scan(
         self,
+        market: str,
         expiry_minutes: int,
-        market_type: str = SIGNAL_TYPE_REGULAR,
+        pairs: Iterable[str] | None = None,
         source: str = "manual",
     ) -> SignalCandidate | None:
-        pairs = self.get_available_pairs(
-            market_type
-        )
-
-        if not pairs:
-            return None
-
-        shuffled = pairs.copy()
-        random.shuffle(shuffled)
-
-        # За один цикл не перебираем весь рынок,
-        # чтобы не сжигать API-лимит.
-        selected = shuffled[:2]
-
-        tasks = [
-            self.scan_pair(
-                pair=pair,
-                expiry_minutes=expiry_minutes,
-                source=source,
+        if pairs is None:
+            pairs = pair_selector.available_pairs(
+                market
             )
-            for pair in selected
-        ]
 
-        results = await asyncio.gather(
-            *tasks,
-            return_exceptions=True,
-        )
+        candidates: list[SignalCandidate] = []
 
-        candidates = [
-            item
-            for item in results
-            if isinstance(
-                item,
-                SignalCandidate,
-            )
-        ]
+        for pair in pairs:
+            try:
+                candidate = await self.scan_pair(
+                    pair=pair,
+                    market=market,
+                    expiry_minutes=expiry_minutes,
+                    source=source,
+                )
+
+                if candidate:
+                    candidates.append(
+                        candidate
+                    )
+
+            except Exception:
+                continue
 
         if not candidates:
             return None
 
-        candidates.sort(
-            key=lambda signal: (
-                signal.confidence,
-                signal.quality,
+        return max(
+            candidates,
+            key=lambda item: (
+                item.winrate,
+                item.confidence,
+                item.quality,
             ),
-            reverse=True,
         )
-
-        return candidates[0]
