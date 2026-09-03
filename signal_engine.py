@@ -1,205 +1,210 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from typing import Iterable
 
 import pandas as pd
 
 from config import (
-    MIN_CANDLES_REQUIRED,
+    BOLLINGER_SCORE,
+    EMA_SCORE,
+    MACD_SCORE,
     MIN_SIGNAL_CONFIDENCE,
+    MIN_SIGNAL_CONFIRMATIONS,
     MIN_SIGNAL_QUALITY,
-    SIGNAL_DOWN,
-    SIGNAL_UP,
+    MIN_SIGNAL_WINRATE,
+    PRICE_ACTION_SCORE,
+    RSI_SCORE,
+    STOCHASTIC_SCORE,
+    TREND_SCORE,
 )
 from indicators import latest_indicators
 from models import SignalCandidate
+from probability import probability_calibrator
+from time_utils import calculate_expiry, utc_now
+from utils import clamp
 
 
 class SignalEngine:
     def analyze(
         self,
         pair: str,
+        market: str,
         df: pd.DataFrame,
         expiry_minutes: int,
         source: str = "manual",
     ) -> SignalCandidate | None:
-        if len(df) < MIN_CANDLES_REQUIRED:
+        if len(df) < 80:
             return None
 
-        try:
-            indicators = latest_indicators(df)
-        except ValueError:
-            return None
+        indicators = latest_indicators(df)
 
-        close = indicators["close"]
-        ema_fast = indicators["ema_fast"]
-        ema_slow = indicators["ema_slow"]
-        ema_trend = indicators["ema_trend"]
+        bullish_score = 0.0
+        bearish_score = 0.0
 
-        rsi = indicators["rsi"]
+        confirmations: list[str] = []
+        reasons: list[str] = []
 
-        macd = indicators["macd"]
-        macd_signal = indicators["macd_signal"]
-
-        bb_upper = indicators["bb_upper"]
-        bb_lower = indicators["bb_lower"]
-        bb_middle = indicators["bb_middle"]
-
-        stochastic_k = indicators["stochastic_k"]
-        stochastic_d = indicators["stochastic_d"]
-
-        bullish = 0.0
-        bearish = 0.0
-
-        bullish_reasons: list[str] = []
-        bearish_reasons: list[str] = []
-
-        # EMA trend
-        if ema_fast > ema_slow:
-            bullish += 15
-            bullish_reasons.append(
-                "EMA показывает восходящий тренд"
-            )
-        elif ema_fast < ema_slow:
-            bearish += 15
-            bearish_reasons.append(
-                "EMA показывает нисходящий тренд"
-            )
-
-        # Long-term trend
-        if close > ema_trend:
-            bullish += 10
-            bullish_reasons.append(
-                "Цена выше EMA тренда"
-            )
-        elif close < ema_trend:
-            bearish += 10
-            bearish_reasons.append(
-                "Цена ниже EMA тренда"
-            )
-
-        # RSI
-        if 52 <= rsi <= 68:
-            bullish += 15
-            bullish_reasons.append(
-                f"RSI поддерживает рост ({rsi:.1f})"
-            )
-        elif 32 <= rsi <= 48:
-            bearish += 15
-            bearish_reasons.append(
-                f"RSI поддерживает падение ({rsi:.1f})"
-            )
-        elif rsi < 30:
-            bullish += 8
-            bullish_reasons.append(
-                f"RSI в зоне перепроданности ({rsi:.1f})"
-            )
-        elif rsi > 70:
-            bearish += 8
-            bearish_reasons.append(
-                f"RSI в зоне перекупленности ({rsi:.1f})"
-            )
-
-        # MACD
-        if macd > macd_signal:
-            bullish += 15
-            bullish_reasons.append(
-                "MACD выше сигнальной линии"
-            )
-        elif macd < macd_signal:
-            bearish += 15
-            bearish_reasons.append(
-                "MACD ниже сигнальной линии"
-            )
-
-        # Bollinger
-        if close <= bb_lower:
-            bullish += 10
-            bullish_reasons.append(
-                "Цена возле нижней полосы Bollinger"
-            )
-        elif close >= bb_upper:
-            bearish += 10
-            bearish_reasons.append(
-                "Цена возле верхней полосы Bollinger"
-            )
-        elif close > bb_middle:
-            bullish += 5
-        elif close < bb_middle:
-            bearish += 5
-
-        # Stochastic
         if (
-            stochastic_k > stochastic_d
-            and stochastic_k < 80
+            indicators.ema_fast
+            > indicators.ema_slow
         ):
-            bullish += 10
-            bullish_reasons.append(
-                "Stochastic поддерживает рост"
+            bullish_score += EMA_SCORE
+            confirmations.append(
+                "EMA 9 выше EMA 21"
             )
         elif (
-            stochastic_k < stochastic_d
-            and stochastic_k > 20
+            indicators.ema_fast
+            < indicators.ema_slow
         ):
-            bearish += 10
-            bearish_reasons.append(
-                "Stochastic поддерживает падение"
+            bearish_score += EMA_SCORE
+            confirmations.append(
+                "EMA 9 ниже EMA 21"
             )
 
-        total = bullish + bearish
+        if (
+            indicators.price
+            > indicators.ema_trend
+        ):
+            bullish_score += TREND_SCORE
+            confirmations.append(
+                "Цена выше EMA 50"
+            )
+        elif (
+            indicators.price
+            < indicators.ema_trend
+        ):
+            bearish_score += TREND_SCORE
+            confirmations.append(
+                "Цена ниже EMA 50"
+            )
 
-        if total <= 0:
+        if indicators.rsi >= 55:
+            bullish_score += RSI_SCORE
+            confirmations.append(
+                f"RSI {indicators.rsi:.1f} bullish"
+            )
+        elif indicators.rsi <= 45:
+            bearish_score += RSI_SCORE
+            confirmations.append(
+                f"RSI {indicators.rsi:.1f} bearish"
+            )
+
+        if (
+            indicators.macd
+            > indicators.macd_signal
+            and indicators.macd_histogram > 0
+        ):
+            bullish_score += MACD_SCORE
+            confirmations.append(
+                "MACD bullish"
+            )
+        elif (
+            indicators.macd
+            < indicators.macd_signal
+            and indicators.macd_histogram < 0
+        ):
+            bearish_score += MACD_SCORE
+            confirmations.append(
+                "MACD bearish"
+            )
+
+        if (
+            indicators.price
+            > indicators.bb_middle
+        ):
+            bullish_score += BOLLINGER_SCORE
+            confirmations.append(
+                "Цена выше средней BB"
+            )
+        elif (
+            indicators.price
+            < indicators.bb_middle
+        ):
+            bearish_score += BOLLINGER_SCORE
+            confirmations.append(
+                "Цена ниже средней BB"
+            )
+
+        if (
+            indicators.stochastic_k
+            > indicators.stochastic_d
+        ):
+            bullish_score += STOCHASTIC_SCORE
+            confirmations.append(
+                "Stochastic bullish"
+            )
+        elif (
+            indicators.stochastic_k
+            < indicators.stochastic_d
+        ):
+            bearish_score += STOCHASTIC_SCORE
+            confirmations.append(
+                "Stochastic bearish"
+            )
+
+        calculated_body = (
+            df.iloc[-1]["close"]
+            - df.iloc[-1]["open"]
+        )
+
+        if calculated_body > 0:
+            bullish_score += PRICE_ACTION_SCORE
+            confirmations.append(
+                "Последняя свеча bullish"
+            )
+        elif calculated_body < 0:
+            bearish_score += PRICE_ACTION_SCORE
+            confirmations.append(
+                "Последняя свеча bearish"
+            )
+
+        if bullish_score == bearish_score:
             return None
 
-        if bullish > bearish:
-            direction = SIGNAL_UP
-            score = bullish
-            reasons = bullish_reasons
+        if bullish_score > bearish_score:
+            direction = "UP"
+            score = bullish_score
+            opposite = bearish_score
         else:
-            direction = SIGNAL_DOWN
-            score = bearish
-            reasons = bearish_reasons
+            direction = "DOWN"
+            score = bearish_score
+            opposite = bullish_score
 
-        opposite = min(
-            bullish,
-            bearish,
+        conflict = opposite / max(
+            score,
+            1,
         )
 
-        conflict_penalty = opposite * 0.35
+        quality = clamp(
+            score - conflict * 15,
+            0,
+            100,
+        )
 
-        quality = max(
-            0.0,
-            min(
-                100.0,
-                score - conflict_penalty,
+        confidence = clamp(
+            (
+                score
+                / 85
+                * 100
             ),
+            0,
+            100,
         )
 
-        # Чем больше преимущество выбранного направления,
-        # тем выше итоговая уверенность.
-        dominance = abs(
-            bullish - bearish
+        probability = (
+            probability_calibrator.estimate(
+                df,
+                expiry_minutes,
+            )
         )
 
-        confidence = min(
-            100.0,
-            55.0 + dominance * 1.15,
-        )
+        winrate = probability.winrate
 
-        confidence = (
-            confidence * 0.55
-            + quality * 0.45
-        )
+        if not probability.reliable:
+            return None
 
-        confidence = round(
-            max(0.0, min(100.0, confidence)),
-            2,
-        )
-
-        quality = round(
-            quality,
-            2,
-        )
+        if winrate < MIN_SIGNAL_WINRATE:
+            return None
 
         if confidence < MIN_SIGNAL_CONFIDENCE:
             return None
@@ -207,20 +212,29 @@ class SignalEngine:
         if quality < MIN_SIGNAL_QUALITY:
             return None
 
-        now = datetime.now(timezone.utc)
+        if len(confirmations) < MIN_SIGNAL_CONFIRMATIONS:
+            return None
+
+        reasons.extend(confirmations)
+
+        created_at = utc_now()
 
         return SignalCandidate(
             pair=pair,
+            market=market,
             direction=direction,
             expiry_minutes=expiry_minutes,
             confidence=confidence,
             quality=quality,
-            entry_price=close,
-            reasons=reasons[:8],
-            created_at=now,
-            expires_at=now
-            + timedelta(
-                minutes=expiry_minutes
+            winrate=winrate,
+            entry_price=indicators.price,
+            created_at=created_at,
+            expires_at=calculate_expiry(
+                expiry_minutes,
+                created_at,
             ),
             source=source,
+            reasons=reasons,
+            confirmations=confirmations,
+            indicators=indicators,
         )
