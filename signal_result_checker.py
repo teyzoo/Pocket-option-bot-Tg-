@@ -1,123 +1,142 @@
 from __future__ import annotations
 
 import asyncio
-import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
+from aiogram import Bot
 from sqlalchemy import select
 
 from config import (
-    SIGNAL_RESULT_LOSS,
-    SIGNAL_RESULT_PENDING,
-    SIGNAL_RESULT_WIN,
+    RESULT_DRAW,
+    RESULT_LOSS,
+    RESULT_PENDING,
+    RESULT_WIN,
+    RESULT_CHECK_INTERVAL_SECONDS,
 )
-from database import Signal, SessionLocal
+from database import Signal, get_session
 from market import MarketClient
-
-
-logger = logging.getLogger(__name__)
+from signal_result_notifications import (
+    notify_result,
+)
 
 
 class SignalResultChecker:
     def __init__(
         self,
+        bot: Bot,
         market: MarketClient,
     ) -> None:
+        self.bot = bot
         self.market = market
-        self._task: asyncio.Task | None = None
-        self._running = False
+        self.running = True
 
-    async def start(self) -> None:
-        if self._running:
-            return
-
-        self._running = True
-        self._task = asyncio.create_task(
-            self._loop()
-        )
-
-        logger.info(
-            "Signal result checker started"
-        )
-
-    async def stop(self) -> None:
-        self._running = False
-
-        if self._task:
-            self._task.cancel()
-
+    async def run(self) -> None:
+        while self.running:
             try:
-                await self._task
-            except asyncio.CancelledError:
+                await self.check_expired()
+            except Exception:
                 pass
 
-            self._task = None
+            await asyncio.sleep(
+                RESULT_CHECK_INTERVAL_SECONDS
+            )
 
-    async def _loop(self) -> None:
-        while self._running:
-            try:
-                await self.check_expired_signals()
+    async def check_expired(self) -> None:
+        now = datetime.utcnow()
 
-            except asyncio.CancelledError:
-                raise
-
-            except Exception:
-                logger.exception(
-                    "Ошибка проверки результатов"
-                )
-
-            await asyncio.sleep(30)
-
-    async def check_expired_signals(self) -> None:
-        now = datetime.now(timezone.utc)
-
-        async with SessionLocal() as session:
+        async with get_session() as session:
             result = await session.execute(
-                select(Signal).where(
-                    Signal.result == SIGNAL_RESULT_PENDING,
-                    Signal.expires_at <= now,
+                select(Signal)
+                .where(
+                    Signal.result
+                    == RESULT_PENDING,
+                    Signal.expires_at
+                    <= now,
                 )
+                .order_by(
+                    Signal.expires_at.asc()
+                )
+                .limit(10)
             )
 
             signals = list(
                 result.scalars().all()
             )
 
-            for signal in signals:
-                try:
-                    close_price = (
-                        await self.market.get_price(
-                            signal.pair
-                        )
+        for signal in signals:
+            await self._process(
+                signal
+            )
+
+    async def _process(
+        self,
+        signal: Signal,
+    ) -> None:
+        try:
+            df = await self.market.get_candles(
+                signal.pair,
+                interval="1min",
+                outputsize=5,
+            )
+
+            close_price = float(
+                df.iloc[-1]["close"]
+            )
+
+            if close_price == signal.entry_price:
+                result = RESULT_DRAW
+
+            elif (
+                signal.direction == "UP"
+                and close_price
+                > signal.entry_price
+            ):
+                result = RESULT_WIN
+
+            elif (
+                signal.direction == "DOWN"
+                and close_price
+                < signal.entry_price
+            ):
+                result = RESULT_WIN
+
+            else:
+                result = RESULT_LOSS
+
+            async with get_session() as session:
+                db_result = await session.execute(
+                    select(Signal).where(
+                        Signal.id == signal.id
                     )
+                )
 
-                    signal.close_price = close_price
+                db_signal = (
+                    db_result.scalar_one_or_none()
+                )
 
-                    if (
-                        signal.direction == "UP"
-                    ):
-                        if close_price > signal.entry_price:
-                            signal.result = SIGNAL_RESULT_WIN
-                        elif close_price < signal.entry_price:
-                            signal.result = SIGNAL_RESULT_LOSS
-                        else:
-                            signal.result = "draw"
+                if db_signal is None:
+                    return
 
-                    else:
-                        if close_price < signal.entry_price:
-                            signal.result = SIGNAL_RESULT_WIN
-                        elif close_price > signal.entry_price:
-                            signal.result = SIGNAL_RESULT_LOSS
-                        else:
-                            signal.result = "draw"
+                if db_signal.result != RESULT_PENDING:
+                    return
 
-                    signal.checked_at = now
+                db_signal.close_price = (
+                    close_price
+                )
 
-                except Exception as exc:
-                    logger.warning(
-                        "Не удалось проверить сигнал %s: %s",
-                        signal.id,
-                        exc,
-                    )
+                db_signal.result = result
+                db_signal.checked_at = (
+                    datetime.utcnow()
+                )
 
-            await session.commit()
+                await session.commit()
+
+                signal = db_signal
+
+            await notify_result(
+                self.bot,
+                signal,
+            )
+
+        except Exception:
+            return
