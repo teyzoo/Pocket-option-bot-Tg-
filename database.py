@@ -4,7 +4,16 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import AsyncIterator
 
-from sqlalchemy import BigInteger, DateTime, Integer, String, Text, Boolean, select
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    Text,
+    select,
+)
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -12,35 +21,45 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from config import DATABASE_URL
+from config import (
+    DB_MAX_OVERFLOW,
+    DB_POOL_SIZE,
+    DATABASE_URL,
+)
 
 
 def normalize_database_url(url: str) -> str:
     url = url.strip()
 
     if url.startswith("postgres://"):
-        url = "postgresql://" + url[len("postgres://") :]
+        url = "postgresql://" + url[len("postgres://"):]
 
     if url.startswith("postgresql://"):
-        url = "postgresql+asyncpg://" + url[len("postgresql://") :]
-
-    if url.startswith("postgres://"):
-        url = "postgresql+asyncpg://" + url[len("postgres://") :]
+        url = (
+            "postgresql+asyncpg://"
+            + url[len("postgresql://"):]
+        )
 
     return url
 
 
-DB_URL = normalize_database_url(DATABASE_URL)
-
-engine = create_async_engine(
-    DB_URL,
-    pool_pre_ping=True,
-    pool_recycle=1800,
-    echo=False,
+DATABASE_ASYNC_URL = normalize_database_url(
+    DATABASE_URL
 )
 
+
+engine = create_async_engine(
+    DATABASE_ASYNC_URL,
+    echo=False,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+    pool_size=DB_POOL_SIZE,
+    max_overflow=DB_MAX_OVERFLOW,
+)
+
+
 SessionLocal = async_sessionmaker(
-    engine,
+    bind=engine,
     class_=AsyncSession,
     expire_on_commit=False,
 )
@@ -53,7 +72,11 @@ class Base(DeclarativeBase):
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+    )
+
     telegram_id: Mapped[int] = mapped_column(
         BigInteger,
         unique=True,
@@ -103,7 +126,10 @@ class User(Base):
 class JoinRequest(Base):
     __tablename__ = "join_requests"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+    )
 
     telegram_id: Mapped[int] = mapped_column(
         BigInteger,
@@ -137,11 +163,20 @@ class JoinRequest(Base):
 class Signal(Base):
     __tablename__ = "signals"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+    )
 
     pair: Mapped[str] = mapped_column(
         String(30),
         index=True,
+        nullable=False,
+    )
+
+    market: Mapped[str] = mapped_column(
+        String(20),
+        default="regular",
         nullable=False,
     )
 
@@ -156,18 +191,27 @@ class Signal(Base):
     )
 
     confidence: Mapped[float] = mapped_column(
+        Float,
         nullable=False,
     )
 
     quality: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+    )
+
+    winrate: Mapped[float] = mapped_column(
+        Float,
         nullable=False,
     )
 
     entry_price: Mapped[float] = mapped_column(
+        Float,
         nullable=False,
     )
 
     close_price: Mapped[float | None] = mapped_column(
+        Float,
         nullable=True,
     )
 
@@ -185,6 +229,11 @@ class Signal(Base):
     )
 
     reasons: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    chart_path: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
     )
@@ -209,7 +258,10 @@ class Signal(Base):
 class SignalRecipient(Base):
     __tablename__ = "signal_recipients"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+    )
 
     signal_id: Mapped[int] = mapped_column(
         Integer,
@@ -234,9 +286,63 @@ class SignalRecipient(Base):
     )
 
 
+class BotText(Base):
+    __tablename__ = "bot_texts"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+    )
+
+    key: Mapped[str] = mapped_column(
+        String(100),
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+
+    text: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
+class BotSetting(Base):
+    __tablename__ = "bot_settings"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+    )
+
+    key: Mapped[str] = mapped_column(
+        String(100),
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+
+    value: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
 async def init_db() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    async with engine.begin() as connection:
+        await connection.run_sync(
+            Base.metadata.create_all
+        )
 
 
 async def close_db() -> None:
@@ -258,21 +364,26 @@ async def get_user(
 ) -> User | None:
     async with get_session() as session:
         result = await session.execute(
-            select(User).where(User.telegram_id == telegram_id)
+            select(User).where(
+                User.telegram_id == telegram_id
+            )
         )
+
         return result.scalar_one_or_none()
 
 
 async def get_or_create_user(
     telegram_id: int,
-    username: str | None = None,
-    first_name: str | None = None,
+    username: str | None,
+    first_name: str | None,
 ) -> User:
     now = datetime.utcnow()
 
     async with get_session() as session:
         result = await session.execute(
-            select(User).where(User.telegram_id == telegram_id)
+            select(User).where(
+                User.telegram_id == telegram_id
+            )
         )
 
         user = result.scalar_one_or_none()
@@ -289,14 +400,11 @@ async def get_or_create_user(
             )
 
             session.add(user)
-            await session.commit()
-            await session.refresh(user)
 
-            return user
-
-        user.username = username
-        user.first_name = first_name
-        user.updated_at = now
+        else:
+            user.username = username
+            user.first_name = first_name
+            user.updated_at = now
 
         await session.commit()
         await session.refresh(user)
@@ -310,7 +418,7 @@ async def create_join_request(
     now = datetime.utcnow()
 
     async with get_session() as session:
-        existing = await session.execute(
+        result = await session.execute(
             select(JoinRequest)
             .where(
                 JoinRequest.telegram_id == telegram_id,
@@ -319,10 +427,10 @@ async def create_join_request(
             .order_by(JoinRequest.id.desc())
         )
 
-        request = existing.scalars().first()
+        existing = result.scalars().first()
 
-        if request is not None:
-            return request
+        if existing:
+            return existing
 
         request = JoinRequest(
             telegram_id=telegram_id,
@@ -331,6 +439,7 @@ async def create_join_request(
         )
 
         session.add(request)
+
         await session.commit()
         await session.refresh(request)
 
