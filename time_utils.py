@@ -23,15 +23,21 @@ def local_now() -> datetime:
     return datetime.now(LOCAL_TZ)
 
 
-def ensure_utc(value: datetime) -> datetime:
+def ensure_utc(
+    value: datetime,
+) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
 
     return value.astimezone(UTC)
 
 
-def to_local(value: datetime) -> datetime:
-    return ensure_utc(value).astimezone(LOCAL_TZ)
+def to_local(
+    value: datetime,
+) -> datetime:
+    return ensure_utc(value).astimezone(
+        LOCAL_TZ
+    )
 
 
 def calculate_expiry(
@@ -50,30 +56,21 @@ def calculate_expiry(
     )
 
 
-def normalize_expiry(value: str | int) -> int:
+def normalize_expiry(
+    value: str | int,
+) -> int:
     if isinstance(value, str):
-        if value.strip().lower() == "any":
+        if value.lower().strip() == "any":
             return DEFAULT_EXPIRY_MINUTES
 
         value = int(value)
-
-    value = int(value)
 
     return max(
         MIN_EXPIRY_MINUTES,
         min(
             MAX_EXPIRY_MINUTES,
-            value,
+            int(value),
         ),
-    )
-
-
-def expiry_values() -> list[int]:
-    return list(
-        range(
-            MIN_EXPIRY_MINUTES,
-            MAX_EXPIRY_MINUTES + 1,
-        )
     )
 
 
@@ -93,7 +90,10 @@ def format_local_datetime(
     )
 
 
-def is_expired(
-    value: datetime,
-) -> bool:
-    return ensure_utc(value) <= utc_now()
+def expiry_values() -> list[int]:
+    return list(
+        range(
+            MIN_EXPIRY_MINUTES,
+            MAX_EXPIRY_MINUTES + 1,
+        )
+    )
