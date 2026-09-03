@@ -8,6 +8,7 @@ alembic==1.16.4
 
 pandas==2.3.2
 numpy==2.3.2
+matplotlib==3.10.5
 
 httpx==0.28.1
 python-dotenv==1.1.1
