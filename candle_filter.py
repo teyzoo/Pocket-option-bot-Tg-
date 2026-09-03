@@ -1,9 +1,23 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import pandas as pd
+
+from settings_service import (
+    delete_setting,
+    get_json_setting,
+    set_json_setting,
+)
+from time_utils import (
+    ensure_utc,
+    utc_now,
+)
+
+
+CANDLE_FILTER_SETTING_KEY = "candle_filter"
 
 
 @dataclass(slots=True)
@@ -12,72 +26,167 @@ class CandleFilterSettings:
     ignored_last_candles: int = 0
     expires_at: datetime | None = None
 
+    @property
+    def is_active(self) -> bool:
+        if not self.enabled:
+            return False
+
+        if self.ignored_last_candles <= 0:
+            return False
+
+        if self.expires_at is None:
+            return True
+
+        return ensure_utc(self.expires_at) > utc_now()
+
 
 class CandleFilter:
-    def __init__(self) -> None:
-        self._settings = CandleFilterSettings()
+    """
+    Временное исключение последних свечей из анализа.
 
-    def configure(
-        self,
-        ignored_last_candles: int,
-        duration_minutes: int,
-    ) -> CandleFilterSettings:
-        ignored_last_candles = max(
-            0,
-            int(ignored_last_candles),
+    ВАЖНО:
+    - рыночные данные не удаляются;
+    - база данных рынка не изменяется;
+    - исключаются только свечи, передаваемые в анализ;
+    - после окончания срока фильтр автоматически перестаёт действовать.
+    """
+
+    async def get_settings(self) -> CandleFilterSettings:
+        raw = await get_json_setting(
+            CANDLE_FILTER_SETTING_KEY,
+            default=None,
         )
 
-        duration_minutes = max(
-            1,
-            int(duration_minutes),
+        if not isinstance(raw, dict):
+            return CandleFilterSettings()
+
+        enabled = bool(
+            raw.get("enabled", False)
         )
 
-        if ignored_last_candles <= 0:
-            self.disable()
-            return self.get_settings()
+        try:
+            count = int(
+                raw.get(
+                    "ignored_last_candles",
+                    0,
+                )
+            )
+        except (TypeError, ValueError):
+            count = 0
 
-        expires_at = datetime.now(
-            timezone.utc
-        ) + timedelta(
-            minutes=duration_minutes
-        )
+        expires_raw = raw.get("expires_at")
 
-        self._settings = CandleFilterSettings(
-            enabled=True,
-            ignored_last_candles=ignored_last_candles,
-            expires_at=expires_at,
-        )
+        expires_at: datetime | None = None
 
-        return self.get_settings()
+        if expires_raw:
+            try:
+                if isinstance(
+                    expires_raw,
+                    datetime,
+                ):
+                    expires_at = ensure_utc(
+                        expires_raw
+                    )
+                else:
+                    expires_at = ensure_utc(
+                        datetime.fromisoformat(
+                            str(expires_raw)
+                        )
+                    )
+            except Exception:
+                expires_at = None
 
-    def disable(self) -> None:
-        self._settings = CandleFilterSettings()
-
-    def get_settings(self) -> CandleFilterSettings:
         settings = CandleFilterSettings(
-            enabled=self._settings.enabled,
-            ignored_last_candles=self._settings.ignored_last_candles,
-            expires_at=self._settings.expires_at,
+            enabled=enabled,
+            ignored_last_candles=max(
+                0,
+                count,
+            ),
+            expires_at=expires_at,
         )
 
         if (
             settings.enabled
             and settings.expires_at is not None
-            and settings.expires_at
-            <= datetime.now(timezone.utc)
+            and settings.expires_at <= utc_now()
         ):
-            self.disable()
+            await self.disable(
+                updated_by=None
+            )
             return CandleFilterSettings()
 
         return settings
 
-    def apply(
+    async def configure(
+        self,
+        ignored_last_candles: int,
+        duration_minutes: int,
+        updated_by: int | None = None,
+    ) -> CandleFilterSettings:
+        count = max(
+            0,
+            int(ignored_last_candles),
+        )
+
+        duration = max(
+            1,
+            int(duration_minutes),
+        )
+
+        if count <= 0:
+            return await self.disable(
+                updated_by=updated_by
+            )
+
+        expires_at = (
+            utc_now()
+            + timedelta(
+                minutes=duration
+            )
+        )
+
+        value = {
+            "enabled": True,
+            "ignored_last_candles": count,
+            "expires_at": expires_at.isoformat(),
+        }
+
+        await set_json_setting(
+            key=CANDLE_FILTER_SETTING_KEY,
+            value=value,
+            updated_by=updated_by,
+            expires_at=expires_at,
+        )
+
+        return CandleFilterSettings(
+            enabled=True,
+            ignored_last_candles=count,
+            expires_at=expires_at,
+        )
+
+    async def disable(
+        self,
+        updated_by: int | None = None,
+    ) -> CandleFilterSettings:
+        await delete_setting(
+            CANDLE_FILTER_SETTING_KEY
+        )
+
+        return CandleFilterSettings()
+
+    async def apply(
         self,
         df: pd.DataFrame,
     ) -> pd.DataFrame:
-        settings = self.get_settings()
+        if df is None:
+            return df
 
-        if not settings.enabled:
+        if df.empty:
+            return df.copy()
+
+        settings = await self.get_settings()
+
+        if not settings.is_active:
             return df.copy()
 
         count = settings.ignored_last_candles
@@ -89,3 +198,21 @@ class CandleFilter:
             return df.iloc[0:0].copy()
 
         return df.iloc[:-count].copy()
+
+    async def status_text(self) -> str:
+        settings = await self.get_settings()
+
+        if not settings.is_active:
+            return "ВЫКЛ"
+
+        expires = (
+            settings.expires_at.isoformat()
+            if settings.expires_at
+            else "без срока"
+        )
+
+        return (
+            f"ВКЛ • исключено: "
+            f"{settings.ignored_last_candles} • "
+            f"до: {expires}"
+        )
