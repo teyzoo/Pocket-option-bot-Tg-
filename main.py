@@ -9,68 +9,96 @@ from fastapi import FastAPI
 
 from admin import router as admin_router
 from config import BOT_TOKEN
-from database import close_db, init_db
+from database import (
+    close_db,
+    init_db,
+)
 from handlers import router as user_router
+from market import market_client
+from owner import router as owner_router
 from scheduler import SignalScheduler
-from signal_result_checker import SignalResultChecker
+from signal_engine import SignalEngine
+from signal_result_checker import (
+    SignalResultChecker,
+)
 
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    format=(
+        "%(asctime)s | "
+        "%(levelname)s | "
+        "%(name)s | "
+        "%(message)s"
+    ),
 )
 
-logger = logging.getLogger("teyzoo")
+logger = logging.getLogger(
+    "teyzoo"
+)
 
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(
+    token=BOT_TOKEN
+)
 
 dp = Dispatcher()
 
-dp.include_router(admin_router)
-dp.include_router(user_router)
+dp.include_router(
+    admin_router
+)
+
+dp.include_router(
+    owner_router
+)
+
+dp.include_router(
+    user_router
+)
 
 
-scheduler: SignalScheduler | None = None
-result_checker: SignalResultChecker | None = None
+engine = SignalEngine()
 
-bot_task: asyncio.Task | None = None
-scheduler_task: asyncio.Task | None = None
-result_checker_task: asyncio.Task | None = None
+scheduler = SignalScheduler(
+    bot=bot,
+    market=market_client,
+    engine=engine,
+)
+
+result_checker = SignalResultChecker(
+    bot=bot,
+    market=market_client,
+)
 
 
 async def polling_loop() -> None:
-    logger.info("Starting Telegram polling...")
+    logger.info(
+        "Telegram polling starting"
+    )
 
-    try:
-        await dp.start_polling(
-            bot,
-            allowed_updates=dp.resolve_used_update_types(),
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.exception("Telegram polling stopped")
+    await dp.start_polling(
+        bot,
+        allowed_updates=(
+            dp.resolve_used_update_types()
+        ),
+    )
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    global scheduler
-    global result_checker
-    global bot_task
-    global scheduler_task
-    global result_checker_task
-
-    logger.info("Initializing database...")
+async def lifespan(
+    application: FastAPI,
+):
+    logger.info(
+        "Initializing database"
+    )
 
     await init_db()
 
-    logger.info("Database initialized")
+    logger.info(
+        "Database initialized"
+    )
 
-    scheduler = SignalScheduler(bot)
-    result_checker = SignalResultChecker(bot)
-
-    bot_task = asyncio.create_task(
+    polling_task = asyncio.create_task(
         polling_loop()
     )
 
@@ -78,34 +106,33 @@ async def lifespan(app: FastAPI):
         scheduler.run()
     )
 
-    result_checker_task = asyncio.create_task(
+    result_task = asyncio.create_task(
         result_checker.run()
     )
 
-    logger.info("TEYZOO SIGNAL BOT started")
+    logger.info(
+        "TEYZOO Signal Bot started"
+    )
 
     try:
         yield
 
     finally:
-        logger.info("Stopping TEYZOO SIGNAL BOT...")
+        logger.info(
+            "Stopping bot"
+        )
 
-        tasks = [
-            bot_task,
+        for task in (
+            polling_task,
             scheduler_task,
-            result_checker_task,
-        ]
-
-        for task in tasks:
-            if task is not None:
-                task.cancel()
+            result_task,
+        ):
+            task.cancel()
 
         await asyncio.gather(
-            *[
-                task
-                for task in tasks
-                if task is not None
-            ],
+            polling_task,
+            scheduler_task,
+            result_task,
             return_exceptions=True,
         )
 
@@ -113,12 +140,14 @@ async def lifespan(app: FastAPI):
 
         await close_db()
 
-        logger.info("TEYZOO SIGNAL BOT stopped")
+        logger.info(
+            "Bot stopped"
+        )
 
 
 app = FastAPI(
     title="TEYZOO Signal Bot",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
