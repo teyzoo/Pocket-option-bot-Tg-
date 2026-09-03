@@ -1,0 +1,48 @@
+services:
+  - type: web
+    name: teyzoo-signal-bot
+    runtime: python
+    plan: free
+
+    buildCommand: pip install -r requirements.txt
+
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+
+    healthCheckPath: /health
+
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+
+      - key: DATABASE_URL
+        sync: false
+
+      - key: TWELVE_DATA_API_KEY
+        sync: false
+
+      - key: ADMIN_IDS
+        sync: false
+
+      - key: TIMEZONE
+        value: Europe/Moscow
+
+      - key: MIN_SIGNAL_CONFIDENCE
+        value: "75"
+
+      - key: MIN_SIGNAL_QUALITY
+        value: "75"
+
+      - key: AUTO_SIGNALS_ENABLED
+        value: "true"
+
+      - key: AUTO_SIGNAL_INTERVAL_MINUTES
+        value: "5"
+
+      - key: DEFAULT_EXPIRY_MINUTES
+        value: "5"
+
+      - key: MAX_CANDLES
+        value: "200"
+
+      - key: MIN_CANDLES_REQUIRED
+        value: "80"
