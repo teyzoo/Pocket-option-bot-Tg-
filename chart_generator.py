@@ -21,13 +21,13 @@ from models import SignalCandidate
 
 class ChartGenerator:
     def __init__(self) -> None:
-        self.output_directory = os.path.join(
+        self.directory = os.path.join(
             tempfile.gettempdir(),
-            "teyzoo_charts",
+            "teyzoo_signal_charts",
         )
 
         os.makedirs(
-            self.output_directory,
+            self.directory,
             exist_ok=True,
         )
 
@@ -36,250 +36,219 @@ class ChartGenerator:
         df: pd.DataFrame,
         candidate: SignalCandidate,
     ) -> str:
-        calculated = calculate_indicators(df)
-
-        calculated = calculated.tail(
+        calculated = calculate_indicators(
+            df
+        ).tail(
             CHART_CANDLES
-        ).reset_index(drop=True)
+        ).reset_index(
+            drop=True
+        )
 
         if calculated.empty:
             raise ValueError(
-                "No candles available for chart"
+                "No data for chart"
             )
 
-        figure = plt.figure(
-            figsize=(14, 9),
-            dpi=CHART_DPI,
-        )
-
-        grid = figure.add_gridspec(
+        figure, axes = plt.subplots(
             4,
             1,
-            height_ratios=[
-                4,
-                1,
-                1,
-                1,
-            ],
-            hspace=0.15,
+            figsize=(14, 11),
+            dpi=CHART_DPI,
+            sharex=True,
+            gridspec_kw={
+                "height_ratios": [
+                    4,
+                    1,
+                    1,
+                    1,
+                ]
+            },
         )
 
-        ax_price = figure.add_subplot(
-            grid[0]
-        )
-
-        ax_rsi = figure.add_subplot(
-            grid[1],
-            sharex=ax_price,
-        )
-
-        ax_macd = figure.add_subplot(
-            grid[2],
-            sharex=ax_price,
-        )
-
-        ax_stoch = figure.add_subplot(
-            grid[3],
-            sharex=ax_price,
-        )
+        price_ax = axes[0]
+        rsi_ax = axes[1]
+        macd_ax = axes[2]
+        stochastic_ax = axes[3]
 
         self._draw_candles(
-            ax_price,
+            price_ax,
             calculated,
         )
 
-        ax_price.plot(
+        price_ax.plot(
             calculated.index,
             calculated["ema_fast"],
             label="EMA 9",
-            linewidth=1.2,
         )
 
-        ax_price.plot(
+        price_ax.plot(
             calculated.index,
             calculated["ema_slow"],
             label="EMA 21",
-            linewidth=1.2,
         )
 
-        ax_price.plot(
+        price_ax.plot(
             calculated.index,
             calculated["ema_trend"],
             label="EMA 50",
-            linewidth=1.2,
         )
 
-        ax_price.plot(
+        price_ax.plot(
             calculated.index,
             calculated["bb_upper"],
             label="BB Upper",
             linewidth=0.8,
         )
 
-        ax_price.plot(
+        price_ax.plot(
             calculated.index,
             calculated["bb_middle"],
             label="BB Middle",
             linewidth=0.8,
         )
 
-        ax_price.plot(
+        price_ax.plot(
             calculated.index,
             calculated["bb_lower"],
             label="BB Lower",
             linewidth=0.8,
         )
 
-        ax_price.axhline(
+        price_ax.axhline(
             candidate.entry_price,
             linestyle="--",
             linewidth=1.2,
             label="ENTRY",
         )
 
-        ax_price.set_title(
+        price_ax.set_title(
             (
                 f"{candidate.pair} | "
                 f"{candidate.direction} | "
-                f"WINRATE {candidate.winrate:.1f}% | "
-                f"CONFIDENCE {candidate.confidence:.1f}%"
+                f"WINRATE "
+                f"{candidate.winrate:.1f}% | "
+                f"CONFIDENCE "
+                f"{candidate.confidence:.1f}%"
             )
         )
 
-        ax_price.legend(
-            loc="upper left",
+        price_ax.legend(
             fontsize=7,
-            ncol=3,
+            ncol=4,
+            loc="upper left",
         )
 
-        ax_price.grid(
+        price_ax.grid(
             alpha=0.2
         )
 
-        ax_rsi.plot(
+        rsi_ax.plot(
             calculated.index,
             calculated["rsi"],
             label="RSI",
-            linewidth=1.0,
         )
 
-        ax_rsi.axhline(
+        rsi_ax.axhline(
             70,
             linestyle="--",
-            linewidth=0.8,
         )
 
-        ax_rsi.axhline(
+        rsi_ax.axhline(
             30,
             linestyle="--",
-            linewidth=0.8,
         )
 
-        ax_rsi.set_ylim(
+        rsi_ax.set_ylim(
             0,
             100,
         )
 
-        ax_rsi.set_ylabel(
-            "RSI"
+        rsi_ax.legend(
+            fontsize=7
         )
 
-        ax_rsi.grid(
+        rsi_ax.grid(
             alpha=0.2
         )
 
-        ax_macd.plot(
+        macd_ax.plot(
             calculated.index,
             calculated["macd"],
             label="MACD",
-            linewidth=1.0,
         )
 
-        ax_macd.plot(
+        macd_ax.plot(
             calculated.index,
             calculated["macd_signal"],
             label="Signal",
-            linewidth=1.0,
         )
 
-        ax_macd.bar(
+        macd_ax.bar(
             calculated.index,
             calculated["macd_histogram"],
             alpha=0.35,
             label="Histogram",
         )
 
-        ax_macd.legend(
-            loc="upper left",
-            fontsize=7,
+        macd_ax.legend(
+            fontsize=7
         )
 
-        ax_macd.grid(
+        macd_ax.grid(
             alpha=0.2
         )
 
-        ax_stoch.plot(
+        stochastic_ax.plot(
             calculated.index,
             calculated["stochastic_k"],
             label="%K",
-            linewidth=1.0,
         )
 
-        ax_stoch.plot(
+        stochastic_ax.plot(
             calculated.index,
             calculated["stochastic_d"],
             label="%D",
-            linewidth=1.0,
         )
 
-        ax_stoch.axhline(
+        stochastic_ax.axhline(
             80,
             linestyle="--",
-            linewidth=0.8,
         )
 
-        ax_stoch.axhline(
+        stochastic_ax.axhline(
             20,
             linestyle="--",
-            linewidth=0.8,
         )
 
-        ax_stoch.set_ylim(
+        stochastic_ax.set_ylim(
             0,
             100,
         )
 
-        ax_stoch.legend(
-            loc="upper left",
-            fontsize=7,
+        stochastic_ax.legend(
+            fontsize=7
         )
 
-        ax_stoch.grid(
+        stochastic_ax.grid(
             alpha=0.2
         )
 
-        ax_stoch.set_xlabel(
-            "Candles"
-        )
-
-        created = datetime.utcnow().strftime(
-            "%Y%m%d_%H%M%S_%f"
-        )
-
-        safe_pair = (
-            candidate.pair
-            .replace("/", "_")
-            .replace(" ", "_")
-        )
-
         filename = (
-            f"{safe_pair}_"
-            f"{candidate.direction}_"
-            f"{created}.png"
+            candidate.pair.replace(
+                "/",
+                "_",
+            )
+            + "_"
+            + candidate.direction
+            + "_"
+            + datetime.utcnow().strftime(
+                "%Y%m%d_%H%M%S_%f"
+            )
+            + ".png"
         )
 
         path = os.path.join(
-            self.output_directory,
+            self.directory,
             filename,
         )
 
@@ -296,18 +265,27 @@ class ChartGenerator:
 
     @staticmethod
     def _draw_candles(
-        ax,
+        axis,
         df: pd.DataFrame,
     ) -> None:
-        width = 0.6
-
         for index, row in df.iterrows():
-            open_price = float(row["open"])
-            high_price = float(row["high"])
-            low_price = float(row["low"])
-            close_price = float(row["close"])
+            open_price = float(
+                row["open"]
+            )
 
-            ax.vlines(
+            close_price = float(
+                row["close"]
+            )
+
+            high_price = float(
+                row["high"]
+            )
+
+            low_price = float(
+                row["low"]
+            )
+
+            axis.vlines(
                 index,
                 low_price,
                 high_price,
@@ -320,27 +298,27 @@ class ChartGenerator:
             )
 
             height = abs(
-                close_price - open_price
+                close_price
+                - open_price
             )
 
             if height == 0:
                 height = max(
-                    abs(high_price - low_price)
+                    (
+                        high_price
+                        - low_price
+                    )
                     * 0.01,
                     1e-10,
                 )
 
-            ax.bar(
+            axis.bar(
                 index,
                 height,
                 bottom=bottom,
-                width=width,
+                width=0.6,
                 alpha=0.65,
             )
-
-        ax.grid(
-            alpha=0.2
-        )
 
 
 chart_generator = ChartGenerator()
