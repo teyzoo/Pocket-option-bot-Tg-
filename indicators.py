@@ -20,41 +20,25 @@ from config import (
 from models import IndicatorSnapshot
 
 
-REQUIRED_COLUMNS = (
-    "datetime",
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume",
-)
-
-
-def _validate_dataframe(
-    df: pd.DataFrame,
-) -> None:
-    missing = [
-        column
-        for column in REQUIRED_COLUMNS
-        if column not in df.columns
-    ]
-
-    if missing:
-        raise ValueError(
-            "Missing candle columns: "
-            + ", ".join(missing)
-        )
-
-    if len(df) < 2:
-        raise ValueError(
-            "At least two candles are required"
-        )
-
-
 def calculate_indicators(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    _validate_dataframe(df)
+    required = {
+        "datetime",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    }
+
+    missing = required - set(df.columns)
+
+    if missing:
+        raise ValueError(
+            "Missing columns: "
+            + ", ".join(sorted(missing))
+        )
 
     result = df.copy()
 
@@ -78,6 +62,11 @@ def calculate_indicators(
             "close",
         ]
     )
+
+    if result.empty:
+        raise ValueError(
+            "No valid candles"
+        )
 
     result["ema_fast"] = (
         result["close"]
@@ -111,43 +100,56 @@ def calculate_indicators(
 
     delta = result["close"].diff()
 
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+    gain = delta.clip(
+        lower=0
+    )
 
-    avg_gain = gain.ewm(
+    loss = -delta.clip(
+        upper=0
+    )
+
+    average_gain = gain.ewm(
         alpha=1 / RSI_PERIOD,
         adjust=False,
         min_periods=RSI_PERIOD,
     ).mean()
 
-    avg_loss = loss.ewm(
+    average_loss = loss.ewm(
         alpha=1 / RSI_PERIOD,
         adjust=False,
         min_periods=RSI_PERIOD,
     ).mean()
 
-    rs = avg_gain / avg_loss.replace(
+    rs = average_gain / average_loss.replace(
         0,
         np.nan,
     )
 
-    result["rsi"] = 100 - (
-        100 / (1 + rs)
+    result["rsi"] = (
+        100
+        - (
+            100
+            / (1 + rs)
+        )
     )
 
     result.loc[
-        (avg_loss == 0) & (avg_gain > 0),
+        (average_loss == 0)
+        & (average_gain > 0),
         "rsi",
     ] = 100
 
     result.loc[
-        (avg_gain == 0) & (avg_loss > 0),
+        (average_gain == 0)
+        & (average_loss > 0),
         "rsi",
     ] = 0
 
-    result["rsi"] = result["rsi"].fillna(50)
+    result["rsi"] = result[
+        "rsi"
+    ].fillna(50)
 
-    ema_macd_fast = (
+    macd_fast = (
         result["close"]
         .ewm(
             span=MACD_FAST_PERIOD,
@@ -156,7 +158,7 @@ def calculate_indicators(
         .mean()
     )
 
-    ema_macd_slow = (
+    macd_slow = (
         result["close"]
         .ewm(
             span=MACD_SLOW_PERIOD,
@@ -166,7 +168,7 @@ def calculate_indicators(
     )
 
     result["macd"] = (
-        ema_macd_fast - ema_macd_slow
+        macd_fast - macd_slow
     )
 
     result["macd_signal"] = (
@@ -192,7 +194,7 @@ def calculate_indicators(
         .mean()
     )
 
-    bb_std = (
+    std = (
         result["close"]
         .rolling(
             BOLLINGER_PERIOD,
@@ -203,15 +205,15 @@ def calculate_indicators(
 
     result["bb_upper"] = (
         result["bb_middle"]
-        + BOLLINGER_STD * bb_std
+        + BOLLINGER_STD * std
     )
 
     result["bb_lower"] = (
         result["bb_middle"]
-        - BOLLINGER_STD * bb_std
+        - BOLLINGER_STD * std
     )
 
-    lowest_low = (
+    lowest = (
         result["low"]
         .rolling(
             STOCHASTIC_PERIOD,
@@ -220,7 +222,7 @@ def calculate_indicators(
         .min()
     )
 
-    highest_high = (
+    highest = (
         result["high"]
         .rolling(
             STOCHASTIC_PERIOD,
@@ -230,14 +232,17 @@ def calculate_indicators(
     )
 
     denominator = (
-        highest_high - lowest_low
-    ).replace(0, np.nan)
+        highest - lowest
+    ).replace(
+        0,
+        np.nan,
+    )
 
     result["stochastic_k"] = (
         100
         * (
             result["close"]
-            - lowest_low
+            - lowest
         )
         / denominator
     )
@@ -251,13 +256,22 @@ def calculate_indicators(
         .mean()
     )
 
-    prev_close = result["close"].shift(1)
+    previous_close = result[
+        "close"
+    ].shift(1)
 
     true_range = pd.concat(
         [
-            result["high"] - result["low"],
-            (result["high"] - prev_close).abs(),
-            (result["low"] - prev_close).abs(),
+            result["high"]
+            - result["low"],
+            (
+                result["high"]
+                - previous_close
+            ).abs(),
+            (
+                result["low"]
+                - previous_close
+            ).abs(),
         ],
         axis=1,
     ).max(axis=1)
@@ -273,7 +287,8 @@ def calculate_indicators(
     )
 
     result["body"] = (
-        result["close"] - result["open"]
+        result["close"]
+        - result["open"]
     )
 
     result["body_size"] = (
@@ -282,20 +297,16 @@ def calculate_indicators(
 
     result["upper_wick"] = (
         result["high"]
-        - result[["open", "close"]].max(axis=1)
+        - result[
+            ["open", "close"]
+        ].max(axis=1)
     )
 
     result["lower_wick"] = (
-        result[["open", "close"]].min(axis=1)
+        result[
+            ["open", "close"]
+        ].min(axis=1)
         - result["low"]
-    )
-
-    result["bullish_candle"] = (
-        result["close"] > result["open"]
-    )
-
-    result["bearish_candle"] = (
-        result["close"] < result["open"]
     )
 
     return result
@@ -309,13 +320,13 @@ def latest_indicators(
     row = calculated.iloc[-1]
 
     def number(
-        column: str,
-        default: float = 0.0,
+        name: str,
+        fallback: float = 0.0,
     ) -> float:
-        value = row[column]
+        value = row[name]
 
         if pd.isna(value):
-            return default
+            return fallback
 
         return float(value)
 
@@ -323,20 +334,24 @@ def latest_indicators(
         ema_fast=number("ema_fast"),
         ema_slow=number("ema_slow"),
         ema_trend=number("ema_trend"),
-        rsi=number("rsi", 50.0),
+        rsi=number("rsi", 50),
         macd=number("macd"),
-        macd_signal=number("macd_signal"),
-        macd_histogram=number("macd_histogram"),
+        macd_signal=number(
+            "macd_signal"
+        ),
+        macd_histogram=number(
+            "macd_histogram"
+        ),
         bb_upper=number("bb_upper"),
         bb_middle=number("bb_middle"),
         bb_lower=number("bb_lower"),
         stochastic_k=number(
             "stochastic_k",
-            50.0,
+            50,
         ),
         stochastic_d=number(
             "stochastic_d",
-            50.0,
+            50,
         ),
         atr=number("atr"),
         price=number("close"),
