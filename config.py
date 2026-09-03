@@ -4,34 +4,36 @@ import os
 from dataclasses import dataclass
 from typing import Final
 
+from dotenv import load_dotenv
 
-def env(name: str, default: str | None = None) -> str | None:
+
+load_dotenv()
+
+
+def _get(name: str, default: str | None = None) -> str | None:
     value = os.getenv(name)
-
     if value is None:
         return default
 
     value = value.strip()
 
-    return value if value else default
-
-
-def required_env(name: str) -> str:
-    value = env(name)
-
     if not value:
-        raise RuntimeError(
-            f"Required environment variable is missing: {name}"
-        )
+        return default
 
     return value
 
 
-def env_int(
-    name: str,
-    default: int,
-) -> int:
-    value = env(name)
+def _get_required(name: str) -> str:
+    value = _get(name)
+
+    if not value:
+        raise RuntimeError(f"Environment variable {name} is required")
+
+    return value
+
+
+def _get_int(name: str, default: int) -> int:
+    value = _get(name)
 
     if value is None:
         return default
@@ -40,15 +42,12 @@ def env_int(
         return int(value)
     except ValueError as exc:
         raise RuntimeError(
-            f"{name} must be an integer"
+            f"Environment variable {name} must be an integer"
         ) from exc
 
 
-def env_float(
-    name: str,
-    default: float,
-) -> float:
-    value = env(name)
+def _get_float(name: str, default: float) -> float:
+    value = _get(name)
 
     if value is None:
         return default
@@ -57,15 +56,12 @@ def env_float(
         return float(value)
     except ValueError as exc:
         raise RuntimeError(
-            f"{name} must be a number"
+            f"Environment variable {name} must be a number"
         ) from exc
 
 
-def env_bool(
-    name: str,
-    default: bool,
-) -> bool:
-    value = env(name)
+def _get_bool(name: str, default: bool) -> bool:
+    value = _get(name)
 
     if value is None:
         return default
@@ -74,12 +70,17 @@ def env_bool(
         "1",
         "true",
         "yes",
-        "on",
         "y",
+        "on",
     }
 
 
-def parse_int_list(value: str) -> tuple[int, ...]:
+def _get_int_list(name: str) -> tuple[int, ...]:
+    value = _get(name, "")
+
+    if not value:
+        return ()
+
     result: list[int] = []
 
     for item in value.split(","):
@@ -92,108 +93,271 @@ def parse_int_list(value: str) -> tuple[int, ...]:
             result.append(int(item))
         except ValueError as exc:
             raise RuntimeError(
-                f"Invalid integer in ADMIN_IDS: {item}"
+                f"Environment variable {name} contains invalid integer: {item}"
             ) from exc
 
     return tuple(dict.fromkeys(result))
 
 
-BOT_TOKEN: Final[str] = required_env("BOT_TOKEN")
-DATABASE_URL: Final[str] = required_env("DATABASE_URL")
-TWELVE_DATA_API_KEY: Final[str] = required_env(
-    "TWELVE_DATA_API_KEY"
+BOT_TOKEN: Final[str] = _get_required("BOT_TOKEN")
+DATABASE_URL: Final[str] = _get_required("DATABASE_URL")
+TWELVE_DATA_API_KEY: Final[str] = _get_required("TWELVE_DATA_API_KEY")
+
+ADMIN_IDS: Final[tuple[int, ...]] = _get_int_list("ADMIN_IDS")
+
+OWNER_IDS: Final[tuple[int, ...]] = (
+    _get_int_list("OWNER_IDS") or ADMIN_IDS
 )
 
-ADMIN_IDS: Final[tuple[int, ...]] = parse_int_list(
-    required_env("ADMIN_IDS")
-)
+HOST: Final[str] = _get("HOST", "0.0.0.0") or "0.0.0.0"
+PORT: Final[int] = _get_int("PORT", 10000)
+HEALTH_PATH: Final[str] = _get("HEALTH_PATH", "/health") or "/health"
 
-HOST: Final[str] = env(
-    "HOST",
-    "0.0.0.0",
-) or "0.0.0.0"
+TIMEZONE: Final[str] = _get("TIMEZONE", "Europe/Moscow") or "Europe/Moscow"
 
-PORT: Final[int] = env_int(
-    "PORT",
-    10000,
-)
-
-HEALTH_PATH: Final[str] = env(
-    "HEALTH_PATH",
-    "/health",
-) or "/health"
-
-TIMEZONE: Final[str] = env(
-    "TIMEZONE",
-    "Europe/Moscow",
-) or "Europe/Moscow"
-
-
-# ---------------------------------------------------------------------------
-# ACCESS
-# ---------------------------------------------------------------------------
-
-STATUS_PENDING: Final[str] = "pending"
-STATUS_APPROVED: Final[str] = "approved"
-STATUS_REJECTED: Final[str] = "rejected"
-STATUS_BLACKLISTED: Final[str] = "blacklisted"
-
-
-# ---------------------------------------------------------------------------
-# SIGNAL
-# ---------------------------------------------------------------------------
 
 MIN_SIGNAL_WINRATE: Final[float] = max(
     75.0,
-    env_float(
-        "MIN_SIGNAL_WINRATE",
-        75.0,
-    ),
+    _get_float("MIN_SIGNAL_WINRATE", 75.0),
 )
 
 MIN_SIGNAL_CONFIDENCE: Final[float] = max(
     75.0,
-    env_float(
-        "MIN_SIGNAL_CONFIDENCE",
-        75.0,
-    ),
+    _get_float("MIN_SIGNAL_CONFIDENCE", 75.0),
 )
 
 MIN_SIGNAL_QUALITY: Final[float] = max(
     75.0,
-    env_float(
-        "MIN_SIGNAL_QUALITY",
-        75.0,
-    ),
+    _get_float("MIN_SIGNAL_QUALITY", 75.0),
 )
 
 MIN_SIGNAL_CONFIRMATIONS: Final[int] = max(
     3,
-    env_int(
-        "MIN_SIGNAL_CONFIRMATIONS",
-        3,
-    ),
+    _get_int("MIN_SIGNAL_CONFIRMATIONS", 3),
 )
 
 
-MIN_EXPIRY_MINUTES: Final[int] = 1
-MAX_EXPIRY_MINUTES: Final[int] = 20
+MIN_EXPIRY_MINUTES: Final[int] = max(
+    1,
+    _get_int("MIN_EXPIRY_MINUTES", 1),
+)
+
+MAX_EXPIRY_MINUTES: Final[int] = min(
+    20,
+    max(
+        MIN_EXPIRY_MINUTES,
+        _get_int("MAX_EXPIRY_MINUTES", 20),
+    ),
+)
 
 DEFAULT_EXPIRY_MINUTES: Final[int] = min(
     MAX_EXPIRY_MINUTES,
     max(
         MIN_EXPIRY_MINUTES,
-        env_int(
-            "DEFAULT_EXPIRY_MINUTES",
-            5,
-        ),
+        _get_int("DEFAULT_EXPIRY_MINUTES", 5),
     ),
 )
 
 
-# ---------------------------------------------------------------------------
-# MARKET
-# ---------------------------------------------------------------------------
+MARKET_INTERVAL: Final[str] = (
+    _get("MARKET_INTERVAL", "1min") or "1min"
+)
+
+
+TWELVE_DATA_BASE_URL: Final[str] = (
+    _get(
+        "TWELVE_DATA_BASE_URL",
+        "https://api.twelvedata.com",
+    )
+    or "https://api.twelvedata.com"
+)
+
+TWELVE_DATA_TIMEOUT_SECONDS: Final[float] = _get_float(
+    "TWELVE_DATA_TIMEOUT_SECONDS",
+    20.0,
+)
+
+TWELVE_DATA_MAX_CANDLES: Final[int] = max(
+    100,
+    _get_int("TWELVE_DATA_MAX_CANDLES", 300),
+)
+
+TWELVE_DATA_MIN_CANDLES: Final[int] = max(
+    50,
+    _get_int("TWELVE_DATA_MIN_CANDLES", 80),
+)
+
+TWELVE_DATA_MAX_REQUESTS_PER_SCAN: Final[int] = max(
+    1,
+    _get_int("TWELVE_DATA_MAX_REQUESTS_PER_SCAN", 8),
+)
+
+TWELVE_DATA_CACHE_SECONDS: Final[int] = max(
+    0,
+    _get_int("TWELVE_DATA_CACHE_SECONDS", 45),
+)
+
+
+AUTO_SIGNAL_ENABLED: Final[bool] = _get_bool(
+    "AUTO_SIGNAL_ENABLED",
+    True,
+)
+
+AUTO_SIGNAL_INTERVAL_MINUTES: Final[int] = max(
+    1,
+    _get_int("AUTO_SIGNAL_INTERVAL_MINUTES", 5),
+)
+
+SIGNAL_COOLDOWN_MINUTES: Final[int] = max(
+    0,
+    _get_int("SIGNAL_COOLDOWN_MINUTES", 5),
+)
+
+SIGNAL_DEDUPLICATION_MINUTES: Final[int] = max(
+    1,
+    _get_int("SIGNAL_DEDUPLICATION_MINUTES", 15),
+)
+
+
+RESULT_CHECK_INTERVAL_SECONDS: Final[int] = max(
+    5,
+    _get_int("RESULT_CHECK_INTERVAL_SECONDS", 30),
+)
+
+RESULT_PRICE_TOLERANCE_SECONDS: Final[int] = max(
+    30,
+    _get_int("RESULT_PRICE_TOLERANCE_SECONDS", 120),
+)
+
+
+EMA_FAST: Final[int] = max(
+    2,
+    _get_int("EMA_FAST", 9),
+)
+
+EMA_SLOW: Final[int] = max(
+    EMA_FAST + 1,
+    _get_int("EMA_SLOW", 21),
+)
+
+EMA_TREND: Final[int] = max(
+    EMA_SLOW + 1,
+    _get_int("EMA_TREND", 50),
+)
+
+
+RSI_PERIOD: Final[int] = max(
+    2,
+    _get_int("RSI_PERIOD", 14),
+)
+
+
+MACD_FAST: Final[int] = max(
+    2,
+    _get_int("MACD_FAST", 12),
+)
+
+MACD_SLOW: Final[int] = max(
+    MACD_FAST + 1,
+    _get_int("MACD_SLOW", 26),
+)
+
+MACD_SIGNAL: Final[int] = max(
+    2,
+    _get_int("MACD_SIGNAL", 9),
+)
+
+
+BOLLINGER_PERIOD: Final[int] = max(
+    2,
+    _get_int("BOLLINGER_PERIOD", 20),
+)
+
+BOLLINGER_STD: Final[float] = max(
+    0.1,
+    _get_float("BOLLINGER_STD", 2.0),
+)
+
+
+STOCHASTIC_PERIOD: Final[int] = max(
+    2,
+    _get_int("STOCHASTIC_PERIOD", 14),
+)
+
+STOCHASTIC_SMOOTH: Final[int] = max(
+    1,
+    _get_int("STOCHASTIC_SMOOTH", 3),
+)
+
+
+ATR_PERIOD: Final[int] = max(
+    2,
+    _get_int("ATR_PERIOD", 14),
+)
+
+
+CHART_ENABLED: Final[bool] = _get_bool(
+    "CHART_ENABLED",
+    True,
+)
+
+CHART_WIDTH: Final[float] = max(
+    6.0,
+    _get_float("CHART_WIDTH", 12.0),
+)
+
+CHART_HEIGHT: Final[float] = max(
+    4.0,
+    _get_float("CHART_HEIGHT", 8.0),
+)
+
+CHART_DPI: Final[int] = max(
+    72,
+    _get_int("CHART_DPI", 120),
+)
+
+
+CANDLE_FILTER_ENABLED: Final[bool] = _get_bool(
+    "CANDLE_FILTER_ENABLED",
+    False,
+)
+
+CANDLE_FILTER_IGNORED_LAST: Final[int] = max(
+    0,
+    _get_int("CANDLE_FILTER_IGNORED_LAST", 0),
+)
+
+CANDLE_FILTER_DURATION_MINUTES: Final[int] = max(
+    1,
+    _get_int("CANDLE_FILTER_DURATION_MINUTES", 60),
+)
+
+
+DB_POOL_SIZE: Final[int] = max(
+    1,
+    _get_int("DB_POOL_SIZE", 5),
+)
+
+DB_MAX_OVERFLOW: Final[int] = max(
+    0,
+    _get_int("DB_MAX_OVERFLOW", 5),
+)
+
+DB_POOL_TIMEOUT: Final[int] = max(
+    5,
+    _get_int("DB_POOL_TIMEOUT", 30),
+)
+
+DB_POOL_RECYCLE: Final[int] = max(
+    60,
+    _get_int("DB_POOL_RECYCLE", 1800),
+)
+
+
+LOG_LEVEL: Final[str] = (
+    _get("LOG_LEVEL", "INFO") or "INFO"
+).upper()
+
 
 NORMAL_PAIRS: Final[tuple[str, ...]] = (
     "EUR/USD",
@@ -208,99 +372,10 @@ NORMAL_PAIRS: Final[tuple[str, ...]] = (
     "GBP/JPY",
 )
 
-# Intentionally empty until a real OTC data source is integrated.
-# We NEVER generate fake OTC candles.
+# OTC intentionally remains empty.
+# No fake OTC prices or candles are generated.
 OTC_PAIRS: Final[tuple[str, ...]] = ()
 
-
-# ---------------------------------------------------------------------------
-# TWELVE DATA
-# ---------------------------------------------------------------------------
-
-TWELVE_DATA_BASE_URL: Final[str] = env(
-    "TWELVE_DATA_BASE_URL",
-    "https://api.twelvedata.com",
-) or "https://api.twelvedata.com"
-
-TWELVE_DATA_TIMEOUT: Final[float] = env_float(
-    "TWELVE_DATA_TIMEOUT",
-    20.0,
-)
-
-MAX_CANDLES: Final[int] = max(
-    100,
-    env_int(
-        "MAX_CANDLES",
-        250,
-    ),
-)
-
-MIN_CANDLES_REQUIRED: Final[int] = max(
-    80,
-    env_int(
-        "MIN_CANDLES_REQUIRED",
-        100,
-    ),
-)
-
-MAX_API_REQUESTS_PER_SCAN: Final[int] = max(
-    1,
-    env_int(
-        "MAX_API_REQUESTS_PER_SCAN",
-        4,
-    ),
-)
-
-
-# ---------------------------------------------------------------------------
-# INDICATORS
-# ---------------------------------------------------------------------------
-
-EMA_FAST_PERIOD: Final[int] = 9
-EMA_SLOW_PERIOD: Final[int] = 21
-EMA_TREND_PERIOD: Final[int] = 50
-
-RSI_PERIOD: Final[int] = 14
-
-MACD_FAST_PERIOD: Final[int] = 12
-MACD_SLOW_PERIOD: Final[int] = 26
-MACD_SIGNAL_PERIOD: Final[int] = 9
-
-BOLLINGER_PERIOD: Final[int] = 20
-BOLLINGER_STD: Final[float] = 2.0
-
-STOCHASTIC_PERIOD: Final[int] = 14
-STOCHASTIC_SMOOTHING: Final[int] = 3
-
-ATR_PERIOD: Final[int] = 14
-
-
-# ---------------------------------------------------------------------------
-# SCORING
-# ---------------------------------------------------------------------------
-
-EMA_SCORE: Final[float] = 15.0
-TREND_SCORE: Final[float] = 15.0
-RSI_SCORE: Final[float] = 10.0
-MACD_SCORE: Final[float] = 15.0
-BOLLINGER_SCORE: Final[float] = 10.0
-STOCHASTIC_SCORE: Final[float] = 10.0
-PRICE_ACTION_SCORE: Final[float] = 10.0
-
-MAX_SIGNAL_SCORE: Final[float] = (
-    EMA_SCORE
-    + TREND_SCORE
-    + RSI_SCORE
-    + MACD_SCORE
-    + BOLLINGER_SCORE
-    + STOCHASTIC_SCORE
-    + PRICE_ACTION_SCORE
-)
-
-
-# ---------------------------------------------------------------------------
-# RESULT
-# ---------------------------------------------------------------------------
 
 RESULT_PENDING: Final[str] = "pending"
 RESULT_WIN: Final[str] = "win"
@@ -309,151 +384,37 @@ RESULT_DRAW: Final[str] = "draw"
 RESULT_CANCELLED: Final[str] = "cancelled"
 
 
-# ---------------------------------------------------------------------------
-# AUTO SIGNALS
-# ---------------------------------------------------------------------------
-
-AUTO_SIGNALS_ENABLED: Final[bool] = env_bool(
-    "AUTO_SIGNALS_ENABLED",
-    True,
-)
-
-AUTO_SIGNAL_INTERVAL_MINUTES: Final[int] = max(
-    1,
-    env_int(
-        "AUTO_SIGNAL_INTERVAL_MINUTES",
-        5,
-    ),
-)
-
-AUTO_SIGNAL_MIN_WINRATE: Final[float] = max(
-    75.0,
-    env_float(
-        "AUTO_SIGNAL_MIN_WINRATE",
-        75.0,
-    ),
-)
-
-AUTO_SIGNAL_MAX_PER_CYCLE: Final[int] = max(
-    1,
-    env_int(
-        "AUTO_SIGNAL_MAX_PER_CYCLE",
-        1,
-    ),
-)
+USER_PENDING: Final[str] = "pending"
+USER_APPROVED: Final[str] = "approved"
+USER_REJECTED: Final[str] = "rejected"
+USER_BLACKLISTED: Final[str] = "blacklisted"
 
 
-# ---------------------------------------------------------------------------
-# CHART
-# ---------------------------------------------------------------------------
-
-CHART_ENABLED: Final[bool] = env_bool(
-    "CHART_ENABLED",
-    True,
-)
-
-CHART_CANDLES: Final[int] = max(
-    30,
-    env_int(
-        "CHART_CANDLES",
-        80,
-    ),
-)
-
-CHART_DPI: Final[int] = max(
-    100,
-    env_int(
-        "CHART_DPI",
-        120,
-    ),
-)
+MARKET_REGULAR: Final[str] = "regular"
+MARKET_OTC: Final[str] = "otc"
 
 
-# ---------------------------------------------------------------------------
-# TEMPORARY CANDLE FILTER
-# ---------------------------------------------------------------------------
-
-CANDLE_FILTER_ENABLED: Final[bool] = env_bool(
-    "CANDLE_FILTER_ENABLED",
-    False,
-)
-
-DEFAULT_IGNORED_LAST_CANDLES: Final[int] = max(
-    0,
-    env_int(
-        "DEFAULT_IGNORED_LAST_CANDLES",
-        0,
-    ),
-)
-
-MAX_IGNORED_LAST_CANDLES: Final[int] = max(
-    0,
-    env_int(
-        "MAX_IGNORED_LAST_CANDLES",
-        50,
-    ),
-)
+SIGNAL_SOURCE_AUTO: Final[str] = "auto"
+SIGNAL_SOURCE_MANUAL: Final[str] = "manual"
+SIGNAL_SOURCE_ANALYSIS: Final[str] = "analysis"
 
 
-# ---------------------------------------------------------------------------
-# DATABASE
-# ---------------------------------------------------------------------------
-
-DB_POOL_SIZE: Final[int] = max(
-    1,
-    env_int(
-        "DB_POOL_SIZE",
-        5,
-    ),
-)
-
-DB_MAX_OVERFLOW: Final[int] = max(
-    0,
-    env_int(
-        "DB_MAX_OVERFLOW",
-        5,
-    ),
-)
+DIRECTION_UP: Final[str] = "UP"
+DIRECTION_DOWN: Final[str] = "DOWN"
 
 
-# ---------------------------------------------------------------------------
-# SAFETY / RATE LIMITS
-# ---------------------------------------------------------------------------
-
-USER_SIGNAL_COOLDOWN_SECONDS: Final[int] = max(
-    0,
-    env_int(
-        "USER_SIGNAL_COOLDOWN_SECONDS",
-        15,
-    ),
-)
-
-AUTO_SIGNAL_DEDUP_MINUTES: Final[int] = max(
-    1,
-    env_int(
-        "AUTO_SIGNAL_DEDUP_MINUTES",
-        10,
-    ),
-)
-
-RESULT_CHECK_INTERVAL_SECONDS: Final[int] = max(
-    10,
-    env_int(
-        "RESULT_CHECK_INTERVAL_SECONDS",
-        30,
-    ),
-)
-
-
-@dataclass(frozen=True, slots=True)
-class SignalSettings:
-    min_winrate: float = MIN_SIGNAL_WINRATE
-    min_confidence: float = MIN_SIGNAL_CONFIDENCE
-    min_quality: float = MIN_SIGNAL_QUALITY
-    min_confirmations: int = MIN_SIGNAL_CONFIRMATIONS
-
-
-SIGNAL_SETTINGS: Final[SignalSettings] = SignalSettings()
+@dataclass(frozen=True)
+class ConfigSnapshot:
+    bot_token: str
+    database_url: str
+    twelve_data_api_key: str
+    admin_ids: tuple[int, ...]
+    owner_ids: tuple[int, ...]
+    timezone: str
+    min_signal_winrate: float
+    min_signal_confidence: float
+    min_signal_quality: float
+    min_signal_confirmations: int
 
 
 def validate_config() -> None:
@@ -464,34 +425,51 @@ def validate_config() -> None:
         raise RuntimeError("DATABASE_URL is empty")
 
     if not TWELVE_DATA_API_KEY:
-        raise RuntimeError(
-            "TWELVE_DATA_API_KEY is empty"
-        )
+        raise RuntimeError("TWELVE_DATA_API_KEY is empty")
 
     if not ADMIN_IDS:
         raise RuntimeError(
-            "ADMIN_IDS must contain at least one Telegram ID"
+            "ADMIN_IDS is empty. Add at least one Telegram administrator ID."
         )
 
-    if MIN_SIGNAL_WINRATE < 75:
+    if not OWNER_IDS:
         raise RuntimeError(
-            "MIN_SIGNAL_WINRATE cannot be below 75"
+            "OWNER_IDS is empty. Add at least one Telegram owner ID."
         )
 
-    if MIN_SIGNAL_CONFIDENCE < 75:
+    if MIN_EXPIRY_MINUTES > MAX_EXPIRY_MINUTES:
         raise RuntimeError(
-            "MIN_SIGNAL_CONFIDENCE cannot be below 75"
+            "MIN_EXPIRY_MINUTES cannot exceed MAX_EXPIRY_MINUTES"
         )
 
-    if MIN_SIGNAL_QUALITY < 75:
+    if DEFAULT_EXPIRY_MINUTES < MIN_EXPIRY_MINUTES:
         raise RuntimeError(
-            "MIN_SIGNAL_QUALITY cannot be below 75"
+            "DEFAULT_EXPIRY_MINUTES is below MIN_EXPIRY_MINUTES"
         )
 
-    if not NORMAL_PAIRS:
+    if DEFAULT_EXPIRY_MINUTES > MAX_EXPIRY_MINUTES:
         raise RuntimeError(
-            "NORMAL_PAIRS cannot be empty"
+            "DEFAULT_EXPIRY_MINUTES exceeds MAX_EXPIRY_MINUTES"
+        )
+
+    if TWELVE_DATA_MIN_CANDLES > TWELVE_DATA_MAX_CANDLES:
+        raise RuntimeError(
+            "TWELVE_DATA_MIN_CANDLES cannot exceed TWELVE_DATA_MAX_CANDLES"
         )
 
 
 validate_config()
+
+
+CONFIG = ConfigSnapshot(
+    bot_token=BOT_TOKEN,
+    database_url=DATABASE_URL,
+    twelve_data_api_key=TWELVE_DATA_API_KEY,
+    admin_ids=ADMIN_IDS,
+    owner_ids=OWNER_IDS,
+    timezone=TIMEZONE,
+    min_signal_winrate=MIN_SIGNAL_WINRATE,
+    min_signal_confidence=MIN_SIGNAL_CONFIDENCE,
+    min_signal_quality=MIN_SIGNAL_QUALITY,
+    min_signal_confirmations=MIN_SIGNAL_CONFIRMATIONS,
+)
