@@ -17,33 +17,37 @@ class Candle:
 
 @dataclass(slots=True)
 class IndicatorSnapshot:
-    ema_fast: float
-    ema_slow: float
-    ema_trend: float
+    ema_fast: float | None = None
+    ema_slow: float | None = None
+    ema_trend: float | None = None
 
-    rsi: float
+    rsi: float | None = None
 
-    macd: float
-    macd_signal: float
-    macd_histogram: float
+    macd: float | None = None
+    macd_signal: float | None = None
+    macd_histogram: float | None = None
 
-    bb_upper: float
-    bb_middle: float
-    bb_lower: float
+    bollinger_middle: float | None = None
+    bollinger_upper: float | None = None
+    bollinger_lower: float | None = None
 
-    stochastic_k: float
-    stochastic_d: float
+    stochastic_k: float | None = None
+    stochastic_d: float | None = None
 
-    atr: float
+    atr: float | None = None
 
-    price: float
+    candle_body: float | None = None
+    upper_wick: float | None = None
+    lower_wick: float | None = None
+
+    bullish: bool = False
+    bearish: bool = False
 
 
 @dataclass(slots=True)
 class SignalCandidate:
     pair: str
     direction: str
-
     expiry_minutes: int
 
     confidence: float
@@ -56,17 +60,26 @@ class SignalCandidate:
     expires_at: datetime
 
     source: str = "manual"
+    market: str = "regular"
 
     reasons: list[str] = field(default_factory=list)
-    confirmations: list[str] = field(default_factory=list)
 
-    indicators: IndicatorSnapshot | None = None
+    confirmations: int = 0
 
-    market: str = "regular"
+    indicators: dict[str, Any] = field(
+        default_factory=dict
+    )
 
     chart_path: str | None = None
 
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    winrate_trades: int = 0
+    winrate_wins: int = 0
+    winrate_losses: int = 0
+    winrate_draws: int = 0
 
 
 @dataclass(slots=True)
@@ -74,8 +87,30 @@ class PairInfo:
     symbol: str
     market: str
     enabled: bool = True
-    display_name: str | None = None
+
+
+@dataclass(slots=True)
+class BacktestResult:
+    total: int
+    wins: int
+    losses: int
+    draws: int
 
     @property
-    def name(self) -> str:
-        return self.display_name or self.symbol
+    def decisive_trades(self) -> int:
+        return self.wins + self.losses
+
+    @property
+    def winrate(self) -> float:
+        if self.decisive_trades <= 0:
+            return 0.0
+
+        return (
+            self.wins
+            / self.decisive_trades
+            * 100.0
+        )
+
+    @property
+    def reliable(self) -> bool:
+        return self.decisive_trades >= 30
