@@ -1,177 +1,262 @@
 from __future__ import annotations
 
-from aiogram import Router
+import asyncio
+import logging
+
+from aiogram import F, Router
+from aiogram.enums import ParseMode
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from config import (
-    MIN_SIGNAL_WINRATE,
+    ADMIN_IDS,
+    OWNER_IDS,
+    SIGNAL_RESULT_DRAW,
+    SIGNAL_RESULT_LOSS,
+    SIGNAL_RESULT_WIN,
 )
-from database import get_user
+from database import (
+    User,
+    get_session,
+)
 from keyboards import (
+    back_to_main_keyboard,
     expiry_keyboard,
-    main_keyboard,
+    main_menu_keyboard,
     market_keyboard,
-    pairs_keyboard,
-    pending_keyboard,
+    pair_keyboard,
+    settings_keyboard,
 )
-from messages import (
-    get_text,
-    render_text,
-)
-from pair_selector import pair_selector
-from services import request_access
-from signal_engine import SignalEngine
+from messages import render_message
+from signal_result_notifications import get_user_result_statistics
 from signal_scanner import SignalScanner
-from signal_service import save_signal
-from market import market_client
-from analysis_service import AnalysisService
-from states import (
-    AnalysisStates,
-    SignalStates,
+from signal_service import get_user_signal_history
+from states import SignalStates
+from services import (
+    get_user_access_status,
+    request_access,
+    set_auto_signals,
 )
-from time_utils import normalize_expiry
+from utils import (
+    format_datetime,
+    format_pair,
+    format_price,
+)
 
+logger = logging.getLogger(__name__)
 
 router = Router()
 
-engine = SignalEngine()
+scanner = SignalScanner()
 
-scanner = SignalScanner(
-    market_client,
-    engine,
-)
 
-analysis_service = AnalysisService(
-    market_client,
-    engine,
-)
+def is_owner(telegram_id: int) -> bool:
+    return int(telegram_id) in OWNER_IDS
+
+
+def is_admin(telegram_id: int) -> bool:
+    return int(telegram_id) in ADMIN_IDS or is_owner(telegram_id)
+
+
+async def get_current_user(
+    telegram_id: int,
+) -> User | None:
+    async with get_session() as session:
+        from sqlalchemy import select
+
+        result = await session.execute(
+            select(User).where(
+                User.telegram_id == int(telegram_id)
+            )
+        )
+
+        return result.scalar_one_or_none()
 
 
 async def require_approved(
-    telegram_id: int,
+    message: Message,
 ) -> bool:
-    user = await get_user(
+    telegram_id = int(message.from_user.id)
+
+    status = await get_user_access_status(
         telegram_id
     )
 
-    return bool(
-        user
-        and user.status == "approved"
+    if status == "approved":
+        return True
+
+    if status == "blacklisted":
+        await message.answer(
+            render_message(
+                "start_blacklisted"
+            )
+        )
+        return False
+
+    if status == "pending":
+        await message.answer(
+            render_message(
+                "start_pending"
+            )
+        )
+        return False
+
+    await message.answer(
+        render_message(
+            "access_required"
+        ),
+        reply_markup=back_to_main_keyboard(),
     )
 
-
-@router.message(
-    lambda message:
-    message.text == "🔄 Проверить доступ"
-)
-async def check_access(
-    message: Message,
-) -> None:
-    if message.from_user is None:
-        return
-
-    user, _ = await request_access(
-        message.from_user.id,
-        message.from_user.username,
-        message.from_user.first_name,
-    )
-
-    if user.status == "approved":
-        text = await get_text(
-            "start_approved"
-        )
-
-        await message.answer(
-            text,
-            parse_mode="HTML",
-            reply_markup=main_keyboard(),
-        )
-
-    elif user.status == "blacklisted":
-        text = await get_text(
-            "start_blacklisted"
-        )
-
-        await message.answer(
-            text,
-            parse_mode="HTML",
-        )
-
-    else:
-        text = await get_text(
-            "start_pending"
-        )
-
-        await message.answer(
-            text,
-            parse_mode="HTML",
-            reply_markup=pending_keyboard(),
-        )
+    return False
 
 
-@router.message(
-    lambda message:
-    message.text == "📡 Получить сигнал"
-)
-async def signal_start(
+@router.message(CommandStart())
+async def start_handler(
     message: Message,
     state: FSMContext,
 ) -> None:
-    if message.from_user is None:
-        return
+    await state.clear()
 
-    if not await require_approved(
+    telegram_id = int(
         message.from_user.id
-    ):
+    )
+
+    status = await get_user_access_status(
+        telegram_id
+    )
+
+    if status == "blacklisted":
         await message.answer(
-            "⛔ Сначала получи доступ."
+            render_message(
+                "start_blacklisted"
+            )
         )
         return
 
-    await state.clear()
+    if status == "approved":
+        await message.answer(
+            render_message(
+                "start_approved",
+                name=message.from_user.first_name or "пользователь",
+            ),
+            reply_markup=main_menu_keyboard(
+                is_owner=is_owner(telegram_id)
+            ),
+        )
+        return
 
+    if status == "pending":
+        await message.answer(
+            render_message(
+                "start_pending"
+            )
+        )
+        return
+
+    request = await request_access(
+        telegram_id=telegram_id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name,
+    )
+
+    if request.status == "pending":
+        await message.answer(
+            render_message(
+                "access_request_sent"
+            )
+        )
+
+        return
+
+    if request.status == "blacklisted":
+        await message.answer(
+            render_message(
+                "start_blacklisted"
+            )
+        )
+
+        return
+
+    await message.answer(
+        render_message(
+            "start_pending"
+        )
+    )
+
+
+@router.message(
+    F.text == "🔎 Найти сигнал"
+)
+async def find_signal_handler(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    if not await require_approved(message):
+        return
+
+    await state.clear()
     await state.set_state(
         SignalStates.choosing_market
     )
 
-    text = await get_text(
-        "signal_search"
-    )
-
     await message.answer(
-        text,
-        parse_mode="HTML",
-        reply_markup=market_keyboard(
-            "market"
+        render_message(
+            "signal_choose_market"
         ),
+        reply_markup=market_keyboard(),
     )
 
 
 @router.callback_query(
-    SignalStates.choosing_market,
-    lambda callback:
-    callback.data.startswith(
-        "market:"
-    ),
+    F.data == "menu:signal"
 )
-async def signal_market(
+async def menu_signal_callback(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
+    await callback.answer()
+
+    if not await _callback_approved(callback):
+        return
+
+    await state.clear()
+    await state.set_state(
+        SignalStates.choosing_market
+    )
+
+    await callback.message.edit_text(
+        render_message(
+            "signal_choose_market"
+        ),
+        reply_markup=market_keyboard(),
+    )
+
+
+@router.callback_query(
+    F.data.startswith("market:")
+)
+async def choose_market_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    await callback.answer()
+
+    if not await _callback_approved(callback):
+        return
+
     market = callback.data.split(
         ":",
         1,
     )[1]
 
-    pairs = pair_selector.available_pairs(
-        market
-    )
-
-    if not pairs:
-        await callback.answer(
-            "🌙 Реальных OTC-данных сейчас нет.",
-            show_alert=True,
+    if market == "otc":
+        await callback.message.edit_text(
+            render_message(
+                "otc_unavailable"
+            ),
+            reply_markup=market_keyboard(),
         )
         return
 
@@ -183,34 +268,40 @@ async def signal_market(
         SignalStates.choosing_pair
     )
 
-    await callback.answer()
-
-    if callback.message:
-        await callback.message.edit_text(
-            "💱 <b>Выбери пару:</b>",
-            parse_mode="HTML",
-            reply_markup=pairs_keyboard(
-                pairs,
-                "pair",
-            ),
-        )
+    await callback.message.edit_text(
+        render_message(
+            "choose_pair"
+        ),
+        reply_markup=pair_keyboard(),
+    )
 
 
 @router.callback_query(
-    SignalStates.choosing_pair,
-    lambda callback:
-    callback.data.startswith(
-        "pair:"
-    ),
+    F.data.startswith("pair:")
 )
-async def signal_pair(
+async def choose_pair_callback(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
-    pair = callback.data.split(
+    await callback.answer()
+
+    if not await _callback_approved(callback):
+        return
+
+    encoded_pair = callback.data.split(
         ":",
         1,
     )[1]
+
+    pair = _decode_pair(encoded_pair)
+
+    if pair is None:
+        await callback.message.answer(
+            render_message(
+                "generic_error"
+            )
+        )
+        return
 
     await state.update_data(
         pair=pair
@@ -220,467 +311,459 @@ async def signal_pair(
         SignalStates.choosing_expiry
     )
 
-    await callback.answer()
-
-    if callback.message:
-        await callback.message.edit_text(
-            f"💱 Пара: <b>{pair}</b>\n\n"
-            "⏱ <b>Выбери экспирацию:</b>",
-            parse_mode="HTML",
-            reply_markup=expiry_keyboard(),
-        )
+    await callback.message.edit_text(
+        render_message(
+            "choose_expiry"
+        ),
+        reply_markup=expiry_keyboard(),
+    )
 
 
 @router.callback_query(
-    SignalStates.choosing_expiry,
-    lambda callback:
-    callback.data.startswith(
-        "expiry:"
-    ),
+    F.data.startswith("expiry:")
 )
-async def signal_expiry(
+async def choose_expiry_callback(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
+    await callback.answer()
+
+    if not await _callback_approved(callback):
+        return
+
     value = callback.data.split(
         ":",
         1,
     )[1]
 
-    expiry = normalize_expiry(
-        value
-    )
+    if value == "any":
+        expiry = "any"
+    else:
+        try:
+            expiry = int(value)
+        except ValueError:
+            await callback.message.answer(
+                render_message(
+                    "generic_error"
+                )
+            )
+            return
 
     data = await state.get_data()
 
-    pair = data.get(
-        "pair"
-    )
-
+    pair = data.get("pair")
     market = data.get(
-        "market"
+        "market",
+        "regular",
     )
 
-    if not pair or not market:
-        await callback.answer(
-            "Сессия устарела.",
-            show_alert=True,
-        )
-        await state.clear()
-        return
-
-    await callback.answer(
-        "🔎 Анализирую..."
-    )
-
-    if callback.message:
-        await callback.message.edit_text(
-            "🔎 <b>Анализ рынка...</b>\n\n"
-            f"💱 {pair}\n"
-            f"⏱ {expiry} мин.\n\n"
-            "Проверяю историю и условия "
-            "WINRATE ≥ 75%.",
-            parse_mode="HTML",
-        )
-
-    candidate = await scanner.scan_pair(
-        pair=pair,
-        market=market,
-        expiry_minutes=expiry,
-        source="manual",
-    )
-
-    await state.clear()
-
-    if candidate is None:
-        text = await get_text(
-            "no_signal"
-        )
-
+    if not pair:
         await callback.message.answer(
-            render_text(
-                text,
-                min_winrate=MIN_SIGNAL_WINRATE,
-            ),
-            parse_mode="HTML",
-            reply_markup=main_keyboard(),
+            render_message(
+                "generic_error"
+            )
         )
-
         return
 
-    from chart_generator import (
-        chart_generator,
+    await state.set_state(
+        SignalStates.analyzing
+    )
+
+    await callback.message.edit_text(
+        render_message(
+            "analyzing",
+            pair=format_pair(pair),
+            expiry=(
+                "любое время"
+                if expiry == "any"
+                else f"{expiry} мин"
+            ),
+        )
     )
 
     try:
-        df = await market_client.get_candles(
-            pair,
-            interval="1min",
-            outputsize=120,
+        candidate, chart_path = await scanner.scan_pair(
+            pair=pair,
+            expiry_minutes=expiry,
+            market=market,
         )
 
-        from candle_filter import (
-            candle_filter,
-        )
-
-        df = candle_filter.apply(
-            df
-        )
-
-        candidate.chart_path = (
-            chart_generator.generate(
-                df,
-                candidate,
+        if candidate is None:
+            await callback.message.answer(
+                render_message(
+                    "no_signal",
+                    pair=format_pair(pair),
+                ),
+                reply_markup=back_to_main_keyboard(),
             )
+            return
+
+        from signal_service import save_signal
+
+        signal = await save_signal(
+            candidate
         )
+
+        from signal_service import send_manual_signal
+
+        await send_manual_signal(
+            bot=callback.bot,
+            signal=signal,
+            telegram_id=int(
+                callback.from_user.id
+            ),
+            chart_path=chart_path,
+        )
+
     except Exception:
-        candidate.chart_path = None
+        logger.exception(
+            "Manual signal scan failed"
+        )
 
-    signal = await save_signal(
-        candidate
-    )
+        await callback.message.answer(
+            render_message(
+                "analysis_error"
+            ),
+            reply_markup=back_to_main_keyboard(),
+        )
 
-    from signal_service import (
-        send_signal_to_user,
-    )
-
-    await send_signal_to_user(
-        callback.bot,
-        signal,
-        callback.from_user.id,
-    )
+    finally:
+        await state.clear()
 
 
 @router.message(
-    lambda message:
-    message.text == "📈 Анализ рынка"
+    F.text == "📈 Анализ рынка"
 )
-async def analysis_start(
+async def analysis_market_handler(
     message: Message,
     state: FSMContext,
 ) -> None:
-    if message.from_user is None:
-        return
-
-    if not await require_approved(
-        message.from_user.id
-    ):
-        await message.answer(
-            "⛔ Сначала получи доступ."
-        )
+    if not await require_approved(message):
         return
 
     await state.clear()
-
-    await state.set_state(
-        AnalysisStates.choosing_market
-    )
-
-    text = await get_text(
-        "analysis"
-    )
-
-    await message.answer(
-        text,
-        parse_mode="HTML",
-        reply_markup=market_keyboard(
-            "analysis_market"
-        ),
-    )
-
-
-@router.callback_query(
-    AnalysisStates.choosing_market,
-    lambda callback:
-    callback.data.startswith(
-        "analysis_market:"
-    ),
-)
-async def analysis_market(
-    callback: CallbackQuery,
-    state: FSMContext,
-) -> None:
-    market = callback.data.split(
-        ":",
-        1,
-    )[1]
-
-    pairs = pair_selector.available_pairs(
-        market
-    )
-
-    if not pairs:
-        await callback.answer(
-            "Реального OTC-источника нет.",
-            show_alert=True,
-        )
-        return
 
     await state.update_data(
-        market=market
+        analysis_only=True
     )
-
-    await state.set_state(
-        AnalysisStates.choosing_pair
-    )
-
-    await callback.answer()
-
-    if callback.message:
-        await callback.message.edit_text(
-            "📈 <b>Выбери пару:</b>",
-            parse_mode="HTML",
-            reply_markup=pairs_keyboard(
-                pairs,
-                "analysis_pair",
-            ),
-        )
-
-
-@router.callback_query(
-    AnalysisStates.choosing_pair,
-    lambda callback:
-    callback.data.startswith(
-        "analysis_pair:"
-    ),
-)
-async def analysis_pair(
-    callback: CallbackQuery,
-    state: FSMContext,
-) -> None:
-    pair = callback.data.split(
-        ":",
-        1,
-    )[1]
-
-    data = await state.get_data()
-
-    market = data.get(
-        "market"
-    )
-
-    await state.clear()
-
-    await callback.answer(
-        "📈 Строю анализ..."
-    )
-
-    candidate, df = (
-        await analysis_service.analyze(
-            pair=pair,
-            market=market,
-            expiry_minutes=5,
-        )
-    )
-
-    if (
-        candidate is None
-        or not candidate.chart_path
-    ):
-        await callback.message.answer(
-            "📈 Анализ выполнен, но "
-            "подходящего сигнала ≥75% "
-            "сейчас нет.",
-            reply_markup=main_keyboard(),
-        )
-        return
-
-    from aiogram.types import FSInputFile
-
-    await callback.message.answer_photo(
-        FSInputFile(
-            candidate.chart_path
-        ),
-        caption=(
-            f"📈 <b>АНАЛИЗ {pair}</b>\n\n"
-            f"🎯 Уверенность: "
-            f"<b>{candidate.confidence:.1f}%</b>\n"
-            f"🏆 Исторический WINRATE: "
-            f"<b>{candidate.winrate:.1f}%</b>\n"
-            f"⭐ Качество: "
-            f"<b>{candidate.quality:.1f}%</b>\n\n"
-            "График построен по реальным "
-            "рыночным данным."
-        ),
-        parse_mode="HTML",
-        reply_markup=main_keyboard(),
-    )
-
-
-@router.message(
-    lambda message:
-    message.text == "📊 Статистика"
-)
-async def stats_handler(
-    message: Message,
-) -> None:
-    from stats_service import (
-        get_signal_stats,
-    )
-
-    stats = await get_signal_stats()
-
-    await message.answer(
-        "📊 <b>СТАТИСТИКА</b>\n\n"
-        f"📡 Всего сигналов: "
-        f"<b>{stats['total']}</b>\n"
-        f"✅ WIN: <b>{stats['wins']}</b>\n"
-        f"❌ LOSS: <b>{stats['losses']}</b>\n"
-        f"⚪ DRAW: <b>{stats['draws']}</b>\n\n"
-        f"🏆 Фактический WINRATE: "
-        f"<b>{stats['winrate']:.1f}%</b>",
-        parse_mode="HTML",
-    )
-
-
-@router.message(
-    lambda message:
-    message.text == "📜 История"
-)
-async def history_handler(
-    message: Message,
-) -> None:
-    from history_service import (
-        get_user_history,
-    )
-
-    signals = await get_user_history()
-
-    if not signals:
-        await message.answer(
-            "📜 История пока пустая."
-        )
-        return
-
-    lines = [
-        "📜 <b>ИСТОРИЯ</b>\n"
-    ]
-
-    for signal in signals:
-        result = signal.result.upper()
-
-        icon = {
-            "WIN": "✅",
-            "LOSS": "❌",
-            "DRAW": "⚪",
-            "PENDING": "⏳",
-        }.get(
-            result,
-            "•",
-        )
-
-        lines.append(
-            f"{icon} {signal.pair} "
-            f"{signal.direction} "
-            f"{signal.winrate:.1f}% "
-            f"— {result}"
-        )
-
-    await message.answer(
-        "\n".join(lines),
-        parse_mode="HTML",
-    )
-
-
-@router.message(
-    lambda message:
-    message.text == "⚙️ Настройки"
-)
-async def settings_handler(
-    message: Message,
-) -> None:
-    await message.answer(
-        "⚙️ <b>Настройки</b>\n\n"
-        "Автоматические сигналы доступны "
-        "для одобренных пользователей.\n\n"
-        "Настройки Owner находятся "
-        "в отдельном Owner Menu.",
-        parse_mode="HTML",
-    )
-
-
-@router.callback_query(
-    lambda callback:
-    callback.data == "flow:cancel"
-)
-async def flow_cancel(
-    callback: CallbackQuery,
-    state: FSMContext,
-) -> None:
-    await state.clear()
-
-    await callback.answer(
-        "Отменено"
-    )
-
-    if callback.message:
-        await callback.message.edit_text(
-            "❌ Отменено."
-        )
-
-
-@router.callback_query(
-    lambda callback:
-    callback.data == "flow:back_market"
-)
-async def flow_back_market(
-    callback: CallbackQuery,
-    state: FSMContext,
-) -> None:
-    data = await state.get_data()
-
-    if "market" not in data:
-        await callback.answer()
-        return
 
     await state.set_state(
         SignalStates.choosing_market
     )
 
-    await callback.answer()
+    await message.answer(
+        render_message(
+            "analysis_choose_market"
+        ),
+        reply_markup=market_keyboard(),
+    )
 
-    if callback.message:
-        await callback.message.edit_text(
-            "📡 <b>Выбери рынок:</b>",
-            parse_mode="HTML",
-            reply_markup=market_keyboard(
-                "market"
+
+@router.message(
+    F.text == "📜 История"
+)
+async def history_handler(
+    message: Message,
+) -> None:
+    if not await require_approved(message):
+        return
+
+    history = await get_user_signal_history(
+        telegram_id=int(message.from_user.id),
+        limit=20,
+    )
+
+    if not history:
+        await message.answer(
+            render_message(
+                "history_empty"
+            ),
+            reply_markup=main_menu_keyboard(
+                is_owner=is_owner(
+                    int(message.from_user.id)
+                )
             ),
         )
+        return
+
+    lines = [
+        "📜 <b>История сигналов</b>",
+        "",
+    ]
+
+    for signal in history:
+        result_icon = {
+            SIGNAL_RESULT_WIN: "✅",
+            SIGNAL_RESULT_LOSS: "❌",
+            SIGNAL_RESULT_DRAW: "➖",
+        }.get(
+            signal.result,
+            "⏳",
+        )
+
+        lines.append(
+            f"{result_icon} "
+            f"<b>{format_pair(signal.pair)}</b> "
+            f"{signal.direction}"
+        )
+
+        lines.append(
+            f"   Вход: {format_price(signal.entry_price)}"
+        )
+
+        if signal.close_price is not None:
+            lines.append(
+                f"   Закрытие: "
+                f"{format_price(signal.close_price)}"
+            )
+
+        lines.append(
+            f"   {signal.expiry_minutes} мин • "
+            f"{format_datetime(signal.created_at)}"
+        )
+
+        lines.append("")
+
+    await message.answer(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_menu_keyboard(
+            is_owner=is_owner(
+                int(message.from_user.id)
+            )
+        ),
+    )
+
+
+@router.message(
+    F.text == "📊 Статистика"
+)
+async def stats_handler(
+    message: Message,
+) -> None:
+    if not await require_approved(message):
+        return
+
+    stats = await get_user_result_statistics(
+        telegram_id=int(message.from_user.id)
+    )
+
+    await message.answer(
+        render_message(
+            "stats",
+            total=stats["total"],
+            completed=stats["completed"],
+            wins=stats["wins"],
+            losses=stats["losses"],
+            draws=stats["draws"],
+            winrate=f'{stats["winrate"]:.2f}%',
+        ),
+        reply_markup=main_menu_keyboard(
+            is_owner=is_owner(
+                int(message.from_user.id)
+            )
+        ),
+    )
+
+
+@router.message(
+    F.text == "⚙️ Настройки"
+)
+async def settings_handler(
+    message: Message,
+) -> None:
+    if not await require_approved(message):
+        return
+
+    user = await get_current_user(
+        int(message.from_user.id)
+    )
+
+    enabled = bool(
+        user and user.is_auto_signals_enabled
+    )
+
+    await message.answer(
+        render_message(
+            "settings",
+            auto_status=(
+                "ВКЛ"
+                if enabled
+                else "ВЫКЛ"
+            ),
+        ),
+        reply_markup=settings_keyboard(
+            enabled
+        ),
+    )
 
 
 @router.callback_query(
-    lambda callback:
-    callback.data == "flow:back_pair"
+    F.data == "settings:auto"
 )
-async def flow_back_pair(
+async def settings_auto_callback(
+    callback: CallbackQuery,
+) -> None:
+    await callback.answer()
+
+    if not await _callback_approved(callback):
+        return
+
+    user = await get_current_user(
+        int(callback.from_user.id)
+    )
+
+    if user is None:
+        return
+
+    new_value = not bool(
+        user.is_auto_signals_enabled
+    )
+
+    await set_auto_signals(
+        telegram_id=int(callback.from_user.id),
+        enabled=new_value,
+    )
+
+    await callback.message.edit_text(
+        render_message(
+            "settings",
+            auto_status=(
+                "ВКЛ"
+                if new_value
+                else "ВЫКЛ"
+            ),
+        ),
+        reply_markup=settings_keyboard(
+            new_value
+        ),
+    )
+
+
+@router.callback_query(
+    F.data == "menu:main"
+)
+async def main_menu_callback(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
-    data = await state.get_data()
+    await callback.answer()
+    await state.clear()
 
-    market = data.get(
-        "market"
+    telegram_id = int(
+        callback.from_user.id
     )
 
-    if not market:
-        await callback.answer()
+    status = await get_user_access_status(
+        telegram_id
+    )
+
+    if status != "approved":
+        await callback.message.answer(
+            render_message(
+                "access_required"
+            )
+        )
+        return
+
+    await callback.message.answer(
+        render_message(
+            "main_menu"
+        ),
+        reply_markup=main_menu_keyboard(
+            is_owner=is_owner(telegram_id)
+        ),
+    )
+
+
+@router.callback_query(
+    F.data == "menu:pairs"
+)
+async def menu_pairs_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    await callback.answer()
+
+    if not await _callback_approved(callback):
         return
 
     await state.set_state(
         SignalStates.choosing_pair
     )
 
-    await callback.answer()
+    await callback.message.edit_text(
+        render_message(
+            "choose_pair"
+        ),
+        reply_markup=pair_keyboard(),
+    )
 
-    if callback.message:
-        await callback.message.edit_text(
-            "💱 <b>Выбери пару:</b>",
-            parse_mode="HTML",
-            reply_markup=pairs_keyboard(
-                pair_selector.available_pairs(
-                    market
-                ),
-                "pair",
-            ),
+
+async def _callback_approved(
+    callback: CallbackQuery,
+) -> bool:
+    status = await get_user_access_status(
+        int(callback.from_user.id)
+    )
+
+    if status == "approved":
+        return True
+
+    if status == "blacklisted":
+        await callback.message.answer(
+            render_message(
+                "start_blacklisted"
+            )
         )
+    else:
+        await callback.message.answer(
+            render_message(
+                "access_required"
+            )
+        )
+
+    return False
+
+
+def _decode_pair(
+    value: str,
+) -> str | None:
+    normalized = value.upper()
+
+    mapping = {
+        pair.replace("/", "").upper(): pair
+        for pair in (
+            "EUR/USD",
+            "GBP/USD",
+            "USD/JPY",
+            "USD/CHF",
+            "AUD/USD",
+            "USD/CAD",
+            "NZD/USD",
+            "EUR/GBP",
+            "EUR/JPY",
+            "GBP/JPY",
+        )
+    }
+
+    return mapping.get(normalized)
+
+
+@router.message()
+async def fallback_handler(
+    message: Message,
+) -> None:
+    if not await require_approved(message):
+        return
+
+    await message.answer(
+        render_message(
+            "main_menu"
+        ),
+        reply_markup=main_menu_keyboard(
+            is_owner=is_owner(
+                int(message.from_user.id)
+            )
+        ),
+    )
