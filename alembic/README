@@ -1,0 +1,7 @@
+# Alembic migrations
+
+This directory contains database migrations for TEYZOO SIGNAL BOT.
+
+Initial migration:
+
+0001_initial.py
