@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from typing import Any
 
 import httpx
 import pandas as pd
@@ -14,43 +14,56 @@ from config import (
 )
 
 
-class MarketError(Exception):
+class MarketAPIError(Exception):
     pass
 
 
 class MarketClient:
     def __init__(self) -> None:
-        self.base_url = TWELVE_DATA_BASE_URL.rstrip("/")
-        self.api_key = TWELVE_DATA_API_KEY
-        self.timeout = TWELVE_DATA_TIMEOUT
+        self.base_url = (
+            TWELVE_DATA_BASE_URL.rstrip("/")
+        )
+
+        self.timeout = httpx.Timeout(
+            TWELVE_DATA_TIMEOUT
+        )
+
+        self._lock = asyncio.Lock()
 
     async def _request(
         self,
-        params: dict[str, str],
-    ) -> dict:
-        params = {
-            **params,
-            "apikey": self.api_key,
-        }
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        request_params = dict(params)
 
-        async with httpx.AsyncClient(
-            timeout=self.timeout
-        ) as client:
-            response = await client.get(
-                f"{self.base_url}/time_series",
-                params=params,
-            )
+        request_params["apikey"] = (
+            TWELVE_DATA_API_KEY
+        )
 
-        if response.status_code != 200:
-            raise MarketError(
-                f"Twelve Data HTTP {response.status_code}"
-            )
+        async with self._lock:
+            async with httpx.AsyncClient(
+                timeout=self.timeout
+            ) as client:
+                response = await client.get(
+                    f"{self.base_url}/time_series",
+                    params=request_params,
+                )
+
+        response.raise_for_status()
 
         data = response.json()
 
-        if "status" in data and data["status"] == "error":
-            raise MarketError(
-                data.get("message", "Ошибка Twelve Data")
+        if data.get("status") == "error":
+            raise MarketAPIError(
+                data.get(
+                    "message",
+                    "Twelve Data API error",
+                )
+            )
+
+        if "values" not in data:
+            raise MarketAPIError(
+                "No market values returned"
             )
 
         return data
@@ -61,69 +74,58 @@ class MarketClient:
         interval: str = "1min",
         outputsize: int = MAX_CANDLES,
     ) -> pd.DataFrame:
+        outputsize = max(
+            1,
+            min(
+                MAX_CANDLES,
+                outputsize,
+            ),
+        )
+
         data = await self._request(
             {
                 "symbol": symbol,
                 "interval": interval,
-                "outputsize": str(outputsize),
+                "outputsize": outputsize,
+                "timezone": "UTC",
                 "format": "JSON",
             }
         )
 
-        values = data.get("values")
-
-        if not values:
-            raise MarketError(
-                f"Нет свечей для {symbol} / {interval}"
-            )
+        values = data["values"]
 
         rows = []
 
-        for item in reversed(values):
+        for item in values:
             rows.append(
                 {
-                    "datetime": item["datetime"],
+                    "datetime": pd.to_datetime(
+                        item["datetime"],
+                        utc=True,
+                    ),
                     "open": float(item["open"]),
                     "high": float(item["high"]),
                     "low": float(item["low"]),
                     "close": float(item["close"]),
                     "volume": float(
-                        item.get("volume", 0) or 0
+                        item.get(
+                            "volume",
+                            0,
+                        )
                     ),
                 }
             )
 
         df = pd.DataFrame(rows)
 
-        df["datetime"] = pd.to_datetime(
-            df["datetime"],
-            utc=True,
-        )
-
-        numeric_columns = [
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-        ]
-
-        for column in numeric_columns:
-            df[column] = pd.to_numeric(
-                df[column],
-                errors="coerce",
+        if df.empty:
+            raise MarketAPIError(
+                f"No candles for {symbol}"
             )
 
-        df = df.dropna(
-            subset=[
-                "open",
-                "high",
-                "low",
-                "close",
-            ]
-        )
-
-        df = df.reset_index(drop=True)
+        df = df.sort_values(
+            "datetime"
+        ).reset_index(drop=True)
 
         return df
 
@@ -131,57 +133,15 @@ class MarketClient:
         self,
         symbol: str,
     ) -> float:
-        data = await self._request(
-            {
-                "symbol": symbol,
-                "interval": "1min",
-                "outputsize": "1",
-                "format": "JSON",
-            }
+        df = await self.get_candles(
+            symbol=symbol,
+            interval="1min",
+            outputsize=1,
         )
 
-        values = data.get("values")
-
-        if not values:
-            raise MarketError(
-                f"Нет текущей цены для {symbol}"
-            )
-
-        return float(values[0]["close"])
-
-    async def get_multiple_timeframes(
-        self,
-        symbol: str,
-    ) -> dict[str, pd.DataFrame]:
-        intervals = {
-            "1min": "1min",
-            "5min": "5min",
-            "15min": "15min",
-        }
-
-        tasks = [
-            self.get_candles(
-                symbol,
-                interval,
-                MAX_CANDLES,
-            )
-            for interval in intervals.values()
-        ]
-
-        results = await asyncio.gather(
-            *tasks,
-            return_exceptions=True,
+        return float(
+            df.iloc[-1]["close"]
         )
 
-        output: dict[str, pd.DataFrame] = {}
 
-        for (name, _), result in zip(
-            intervals.items(),
-            results,
-        ):
-            if isinstance(result, Exception):
-                continue
-
-            output[name] = result
-
-        return output
+market_client = MarketClient()
