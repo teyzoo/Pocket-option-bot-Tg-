@@ -1,74 +1,65 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from config import NORMAL_PAIRS, OTC_PAIRS
 from models import PairInfo
 
 
-@dataclass(frozen=True, slots=True)
-class MarketDefinition:
-    key: str
-    title: str
-    pairs: tuple[str, ...]
-    real_data_required: bool = True
-
-
 class PairSelector:
     def __init__(self) -> None:
-        self.markets = {
-            "regular": MarketDefinition(
-                key="regular",
-                title="💱 Обычный рынок",
-                pairs=NORMAL_PAIRS,
-                real_data_required=True,
-            ),
-            "otc": MarketDefinition(
-                key="otc",
-                title="🌙 OTC",
-                pairs=OTC_PAIRS,
-                real_data_required=True,
-            ),
-        }
-
-    def normalize(self, pair: str) -> str:
-        return pair.strip().upper()
-
-    def get_market(
-        self,
-        market: str,
-    ) -> MarketDefinition | None:
-        return self.markets.get(
-            market.strip().lower()
+        self.normal_pairs = tuple(
+            NORMAL_PAIRS
         )
+
+        self.otc_pairs = tuple(
+            OTC_PAIRS
+        )
+
+    @staticmethod
+    def normalize(
+        pair: str,
+    ) -> str:
+        return pair.strip().upper()
 
     def available_pairs(
         self,
         market: str,
     ) -> list[str]:
-        definition = self.get_market(market)
+        market = market.lower().strip()
 
-        if definition is None:
-            return []
+        if market == "regular":
+            return list(
+                self.normal_pairs
+            )
 
-        return list(definition.pairs)
+        if market == "otc":
+            return list(
+                self.otc_pairs
+            )
+
+        if market == "any":
+            return list(
+                dict.fromkeys(
+                    [
+                        *self.normal_pairs,
+                        *self.otc_pairs,
+                    ]
+                )
+            )
+
+        return []
 
     def pair_infos(
         self,
         market: str,
     ) -> list[PairInfo]:
-        definition = self.get_market(market)
-
-        if definition is None:
-            return []
-
         return [
             PairInfo(
                 symbol=pair,
                 market=market,
-                enabled=True,
             )
-            for pair in definition.pairs
+            for pair in self.available_pairs(
+                market
+            )
         ]
 
     def is_allowed(
@@ -76,23 +67,13 @@ class PairSelector:
         pair: str,
         market: str,
     ) -> bool:
-        normalized = self.normalize(pair)
-
-        return normalized in self.available_pairs(
-            market
+        return (
+            self.normalize(pair)
+            in self.available_pairs(market)
         )
 
-    def is_otc_available(self) -> bool:
-        return bool(OTC_PAIRS)
-
-    def is_regular_available(self) -> bool:
-        return bool(NORMAL_PAIRS)
-
-    def all_regular_pairs(self) -> list[str]:
-        return list(NORMAL_PAIRS)
-
-    def all_otc_pairs(self) -> list[str]:
-        return list(OTC_PAIRS)
+    def otc_available(self) -> bool:
+        return bool(self.otc_pairs)
 
 
 pair_selector = PairSelector()
