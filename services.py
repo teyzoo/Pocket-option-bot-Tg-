@@ -16,33 +16,37 @@ async def request_access(
     telegram_id: int,
     username: str | None,
     first_name: str | None,
-) -> tuple[User, JoinRequest | None]:
+):
     user = await get_or_create_user(
         telegram_id=telegram_id,
         username=username,
         first_name=first_name,
     )
 
-    if user.status == "blacklisted":
-        return user, None
-
-    if user.status == "approved":
+    if user.status in {
+        "approved",
+        "blacklisted",
+    }:
         return user, None
 
     async with get_session() as session:
         result = await session.execute(
             select(JoinRequest)
             .where(
-                JoinRequest.telegram_id == telegram_id,
-                JoinRequest.status == "pending",
+                JoinRequest.telegram_id
+                == telegram_id,
+                JoinRequest.status
+                == "pending",
             )
-            .order_by(JoinRequest.id.desc())
+            .order_by(
+                JoinRequest.id.desc()
+            )
         )
 
-        existing = result.scalars().first()
+        request = result.scalars().first()
 
-        if existing is not None:
-            return user, existing
+        if request is not None:
+            return user, request
 
         request = JoinRequest(
             telegram_id=telegram_id,
@@ -50,15 +54,22 @@ async def request_access(
             created_at=datetime.utcnow(),
         )
 
-        user.status = "pending"
-        user.updated_at = datetime.utcnow()
+        user_result = await session.execute(
+            select(User).where(
+                User.telegram_id == telegram_id
+            )
+        )
+
+        db_user = user_result.scalar_one()
+
+        db_user.status = "pending"
+        db_user.updated_at = datetime.utcnow()
 
         session.add(request)
 
         await session.commit()
-        await session.refresh(request)
 
-        return user, request
+        return db_user, request
 
 
 async def approve_user(
@@ -67,7 +78,9 @@ async def approve_user(
 ) -> User | None:
     async with get_session() as session:
         result = await session.execute(
-            select(User).where(User.telegram_id == telegram_id)
+            select(User).where(
+                User.telegram_id == telegram_id
+            )
         )
 
         user = result.scalar_one_or_none()
@@ -81,18 +94,19 @@ async def approve_user(
 
         requests = await session.execute(
             select(JoinRequest).where(
-                JoinRequest.telegram_id == telegram_id,
-                JoinRequest.status == "pending",
+                JoinRequest.telegram_id
+                == telegram_id,
+                JoinRequest.status
+                == "pending",
             )
         )
 
-        for request in requests.scalars().all():
+        for request in requests.scalars():
             request.status = "approved"
             request.processed_at = datetime.utcnow()
             request.processed_by = admin_id
 
         await session.commit()
-        await session.refresh(user)
 
         return user
 
@@ -103,7 +117,9 @@ async def reject_user(
 ) -> User | None:
     async with get_session() as session:
         result = await session.execute(
-            select(User).where(User.telegram_id == telegram_id)
+            select(User).where(
+                User.telegram_id == telegram_id
+            )
         )
 
         user = result.scalar_one_or_none()
@@ -116,18 +132,19 @@ async def reject_user(
 
         requests = await session.execute(
             select(JoinRequest).where(
-                JoinRequest.telegram_id == telegram_id,
-                JoinRequest.status == "pending",
+                JoinRequest.telegram_id
+                == telegram_id,
+                JoinRequest.status
+                == "pending",
             )
         )
 
-        for request in requests.scalars().all():
+        for request in requests.scalars():
             request.status = "rejected"
             request.processed_at = datetime.utcnow()
             request.processed_by = admin_id
 
         await session.commit()
-        await session.refresh(user)
 
         return user
 
@@ -135,11 +152,13 @@ async def reject_user(
 async def blacklist_user(
     telegram_id: int,
     admin_id: int,
-    reason: str | None = None,
+    reason: str | None,
 ) -> User | None:
     async with get_session() as session:
         result = await session.execute(
-            select(User).where(User.telegram_id == telegram_id)
+            select(User).where(
+                User.telegram_id == telegram_id
+            )
         )
 
         user = result.scalar_one_or_none()
@@ -153,18 +172,19 @@ async def blacklist_user(
 
         requests = await session.execute(
             select(JoinRequest).where(
-                JoinRequest.telegram_id == telegram_id,
-                JoinRequest.status == "pending",
+                JoinRequest.telegram_id
+                == telegram_id,
+                JoinRequest.status
+                == "pending",
             )
         )
 
-        for request in requests.scalars().all():
+        for request in requests.scalars():
             request.status = "rejected"
             request.processed_at = datetime.utcnow()
             request.processed_by = admin_id
 
         await session.commit()
-        await session.refresh(user)
 
         return user
 
@@ -174,7 +194,9 @@ async def unblacklist_user(
 ) -> User | None:
     async with get_session() as session:
         result = await session.execute(
-            select(User).where(User.telegram_id == telegram_id)
+            select(User).where(
+                User.telegram_id == telegram_id
+            )
         )
 
         user = result.scalar_one_or_none()
@@ -187,6 +209,5 @@ async def unblacklist_user(
         user.updated_at = datetime.utcnow()
 
         await session.commit()
-        await session.refresh(user)
 
         return user
