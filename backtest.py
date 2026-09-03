@@ -1,134 +1,231 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import pandas as pd
 
+from config import (
+    MIN_SIGNAL_CONFIRMATIONS,
+)
 from indicators import calculate_indicators
+from models import BacktestResult
 
 
-@dataclass(slots=True)
-class BacktestResult:
-    total_trades: int
-    wins: int
-    losses: int
-    draws: int
-    winrate: float
-
-
-def _direction_from_row(
+def _evaluate_row(
     row: pd.Series,
-) -> str | None:
-    bullish = 0
-    bearish = 0
+) -> tuple[str | None, int, float, list[str]]:
+    score = 0.0
+    confirmations = 0
+    reasons: list[str] = []
 
-    if row["ema_fast"] > row["ema_slow"]:
-        bullish += 1
-    elif row["ema_fast"] < row["ema_slow"]:
-        bearish += 1
+    close = row.get("close")
+    ema_fast = row.get("ema_fast")
+    ema_slow = row.get("ema_slow")
+    ema_trend = row.get("ema_trend")
+    rsi = row.get("rsi")
+    macd = row.get("macd")
+    macd_signal = row.get("macd_signal")
+    bb_middle = row.get("bollinger_middle")
+    bb_upper = row.get("bollinger_upper")
+    bb_lower = row.get("bollinger_lower")
+    stoch_k = row.get("stochastic_k")
+    stoch_d = row.get("stochastic_d")
+    bullish = bool(row.get("bullish", False))
+    bearish = bool(row.get("bearish", False))
 
-    if row["close"] > row["ema_trend"]:
-        bullish += 1
-    elif row["close"] < row["ema_trend"]:
-        bearish += 1
+    required = (
+        close,
+        ema_fast,
+        ema_slow,
+        ema_trend,
+        rsi,
+        macd,
+        macd_signal,
+        bb_middle,
+        bb_upper,
+        bb_lower,
+        stoch_k,
+        stoch_d,
+    )
 
-    if row["macd"] > row["macd_signal"]:
-        bullish += 1
-    elif row["macd"] < row["macd_signal"]:
-        bearish += 1
+    if any(
+        value is None
+        or pd.isna(value)
+        for value in required
+    ):
+        return None, 0, 0.0, []
 
-    if row["rsi"] >= 55:
-        bullish += 1
-    elif row["rsi"] <= 45:
-        bearish += 1
+    if ema_fast > ema_slow:
+        score += 15
+        confirmations += 1
+        reasons.append("EMA 9 выше EMA 21")
+    elif ema_fast < ema_slow:
+        score -= 15
+        confirmations += 1
+        reasons.append("EMA 9 ниже EMA 21")
 
-    if row["stochastic_k"] >= row["stochastic_d"]:
-        bullish += 1
-    elif row["stochastic_k"] < row["stochastic_d"]:
-        bearish += 1
+    if close > ema_trend:
+        score += 15
+        confirmations += 1
+        reasons.append("Цена выше EMA 50")
+    elif close < ema_trend:
+        score -= 15
+        confirmations += 1
+        reasons.append("Цена ниже EMA 50")
 
-    if bullish >= 4 and bullish > bearish:
-        return "UP"
+    if rsi >= 55:
+        score += 10
+        confirmations += 1
+        reasons.append("RSI подтверждает рост")
+    elif rsi <= 45:
+        score -= 10
+        confirmations += 1
+        reasons.append("RSI подтверждает снижение")
 
-    if bearish >= 4 and bearish > bullish:
-        return "DOWN"
+    if macd > macd_signal:
+        score += 15
+        confirmations += 1
+        reasons.append("MACD бычий")
+    elif macd < macd_signal:
+        score -= 15
+        confirmations += 1
+        reasons.append("MACD медвежий")
 
-    return None
+    if close > bb_middle:
+        score += 10
+        confirmations += 1
+        reasons.append("Цена выше средней Bollinger")
+    elif close < bb_middle:
+        score -= 10
+        confirmations += 1
+        reasons.append("Цена ниже средней Bollinger")
+
+    if stoch_k > stoch_d and stoch_k < 80:
+        score += 10
+        confirmations += 1
+        reasons.append("Stochastic подтверждает рост")
+    elif stoch_k < stoch_d and stoch_k > 20:
+        score -= 10
+        confirmations += 1
+        reasons.append("Stochastic подтверждает снижение")
+
+    if bullish:
+        score += 5
+    elif bearish:
+        score -= 5
+
+    if score > 0:
+        direction = "UP"
+    elif score < 0:
+        direction = "DOWN"
+    else:
+        direction = None
+
+    confidence = (
+        50.0
+        + abs(score) / 95.0 * 50.0
+    )
+
+    if (
+        direction is None
+        or confirmations < MIN_SIGNAL_CONFIRMATIONS
+        or confidence < 75.0
+    ):
+        return (
+            None,
+            confirmations,
+            confidence,
+            reasons,
+        )
+
+    return (
+        direction,
+        confirmations,
+        confidence,
+        reasons,
+    )
+
+
+def evaluate_row(
+    row: pd.Series,
+) -> tuple[str | None, int, float, list[str]]:
+    return _evaluate_row(row)
 
 
 def run_backtest(
     df: pd.DataFrame,
     expiry_minutes: int,
 ) -> BacktestResult:
-    if expiry_minutes < 1:
-        raise ValueError(
-            "expiry_minutes must be >= 1"
+    if df.empty:
+        return BacktestResult(
+            total=0,
+            wins=0,
+            losses=0,
+            draws=0,
         )
 
-    calculated = calculate_indicators(df)
+    expiry_minutes = max(
+        1,
+        int(expiry_minutes),
+    )
 
+    data = calculate_indicators(df)
+
+    total = 0
     wins = 0
     losses = 0
     draws = 0
 
-    total = len(calculated) - expiry_minutes
+    minimum_history = 60
 
-    if total <= 0:
-        return BacktestResult(
-            total_trades=0,
-            wins=0,
-            losses=0,
-            draws=0,
-            winrate=0.0,
+    for index in range(
+        minimum_history,
+        len(data) - expiry_minutes,
+    ):
+        history = data.iloc[: index + 1]
+
+        row = history.iloc[-1]
+
+        direction, confirmations, confidence, _ = (
+            _evaluate_row(row)
         )
-
-    for index in range(total):
-        row = calculated.iloc[index]
-
-        direction = _direction_from_row(row)
 
         if direction is None:
             continue
 
+        if confirmations < MIN_SIGNAL_CONFIRMATIONS:
+            continue
+
+        if confidence < 75.0:
+            continue
+
         entry = float(row["close"])
 
-        future = calculated.iloc[
+        future_row = data.iloc[
             index + expiry_minutes
         ]
 
-        close = float(future["close"])
-
-        if direction == "UP":
-            if close > entry:
-                wins += 1
-            elif close < entry:
-                losses += 1
-            else:
-                draws += 1
-
-        else:
-            if close < entry:
-                wins += 1
-            elif close > entry:
-                losses += 1
-            else:
-                draws += 1
-
-    evaluated = wins + losses + draws
-
-    if evaluated == 0:
-        winrate = 0.0
-    else:
-        winrate = (
-            wins
-            / evaluated
-            * 100
+        close_price = float(
+            future_row["close"]
         )
 
+        total += 1
+
+        if close_price > entry:
+            actual = "UP"
+        elif close_price < entry:
+            actual = "DOWN"
+        else:
+            actual = "DRAW"
+
+        if actual == "DRAW":
+            draws += 1
+        elif actual == direction:
+            wins += 1
+        else:
+            losses += 1
+
     return BacktestResult(
-        total_trades=evaluated,
+        total=total,
         wins=wins,
         losses=losses,
         draws=draws,
-        winrate=winrate,
     )
