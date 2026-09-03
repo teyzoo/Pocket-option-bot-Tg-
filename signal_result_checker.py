@@ -1,142 +1,254 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections import defaultdict
 from datetime import datetime
 
-from aiogram import Bot
 from sqlalchemy import select
 
 from config import (
-    RESULT_DRAW,
-    RESULT_LOSS,
-    RESULT_PENDING,
-    RESULT_WIN,
-    RESULT_CHECK_INTERVAL_SECONDS,
+    RESULT_CHECKER_INTERVAL_SECONDS,
+    SIGNAL_RESULT_DRAW,
+    SIGNAL_RESULT_LOSS,
+    SIGNAL_RESULT_PENDING,
+    SIGNAL_RESULT_WIN,
 )
 from database import Signal, get_session
 from market import MarketClient
-from signal_result_notifications import (
-    notify_result,
-)
+from signal_result_notifications import notify_signal_result
+from time_utils import ensure_utc, utc_now
+
+logger = logging.getLogger(__name__)
 
 
 class SignalResultChecker:
     def __init__(
         self,
-        bot: Bot,
-        market: MarketClient,
+        bot,
+        market_client: MarketClient | None = None,
     ) -> None:
         self.bot = bot
-        self.market = market
-        self.running = True
+        self.market = market_client or MarketClient()
 
-    async def run(self) -> None:
-        while self.running:
+        self._running = False
+        self._task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        if self._running:
+            return
+
+        self._running = True
+
+        self._task = asyncio.create_task(
+            self._run_loop(),
+            name="signal-result-checker",
+        )
+
+        logger.info("Signal result checker started")
+
+    async def stop(self) -> None:
+        self._running = False
+
+        if self._task is not None:
+            self._task.cancel()
+
             try:
-                await self.check_expired()
-            except Exception:
+                await self._task
+            except asyncio.CancelledError:
                 pass
 
+            self._task = None
+
+        logger.info("Signal result checker stopped")
+
+    async def _run_loop(self) -> None:
+        while self._running:
+            try:
+                await self.check_expired_signals()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Unhandled error in signal result checker"
+                )
+
             await asyncio.sleep(
-                RESULT_CHECK_INTERVAL_SECONDS
+                max(5, RESULT_CHECKER_INTERVAL_SECONDS)
             )
 
-    async def check_expired(self) -> None:
-        now = datetime.utcnow()
+    async def get_expired_signals(self) -> list[Signal]:
+        now = utc_now()
 
         async with get_session() as session:
-            result = await session.execute(
+            query = (
                 select(Signal)
                 .where(
-                    Signal.result
-                    == RESULT_PENDING,
-                    Signal.expires_at
-                    <= now,
+                    Signal.result == SIGNAL_RESULT_PENDING,
+                    Signal.expires_at <= now,
                 )
                 .order_by(
-                    Signal.expires_at.asc()
+                    Signal.expires_at.asc(),
                 )
-                .limit(10)
+                .limit(100)
             )
 
-            signals = list(
-                result.scalars().all()
-            )
+            result = await session.execute(query)
+
+            return list(result.scalars().all())
+
+    async def check_expired_signals(self) -> int:
+        signals = await self.get_expired_signals()
+
+        if not signals:
+            return 0
+
+        grouped: dict[str, list[Signal]] = defaultdict(list)
 
         for signal in signals:
-            await self._process(
-                signal
-            )
+            grouped[signal.pair].append(signal)
 
-    async def _process(
-        self,
-        signal: Signal,
-    ) -> None:
-        try:
-            df = await self.market.get_candles(
-                signal.pair,
-                interval="1min",
-                outputsize=5,
-            )
+        processed = 0
 
-            close_price = float(
-                df.iloc[-1]["close"]
-            )
+        for pair, pair_signals in grouped.items():
+            try:
+                candles = await self.market.get_candles(
+                    pair=pair,
+                    interval="1min",
+                    outputsize=300,
+                    force_refresh=True,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to fetch result candles for %s",
+                    pair,
+                )
+                continue
 
-            if close_price == signal.entry_price:
-                result = RESULT_DRAW
+            if candles is None or candles.empty:
+                logger.warning(
+                    "No candles available for result checking: %s",
+                    pair,
+                )
+                continue
 
-            elif (
-                signal.direction == "UP"
-                and close_price
-                > signal.entry_price
-            ):
-                result = RESULT_WIN
-
-            elif (
-                signal.direction == "DOWN"
-                and close_price
-                < signal.entry_price
-            ):
-                result = RESULT_WIN
-
-            else:
-                result = RESULT_LOSS
-
-            async with get_session() as session:
-                db_result = await session.execute(
-                    select(Signal).where(
-                        Signal.id == signal.id
+            for signal in pair_signals:
+                try:
+                    close_price = self.market.get_close_for_expiry(
+                        candles,
+                        signal.expires_at,
                     )
-                )
 
-                db_signal = (
-                    db_result.scalar_one_or_none()
-                )
+                    if close_price is None:
+                        logger.warning(
+                            "Expiry candle unavailable for signal %s",
+                            signal.id,
+                        )
+                        continue
 
-                if db_signal is None:
-                    return
+                    result = self._calculate_result(
+                        direction=signal.direction,
+                        entry_price=float(signal.entry_price),
+                        close_price=float(close_price),
+                    )
 
-                if db_signal.result != RESULT_PENDING:
-                    return
+                    updated_signal = await self._save_result(
+                        signal_id=signal.id,
+                        result=result,
+                        close_price=float(close_price),
+                    )
 
-                db_signal.close_price = (
-                    close_price
-                )
+                    if updated_signal is None:
+                        continue
 
-                db_signal.result = result
-                db_signal.checked_at = (
-                    datetime.utcnow()
-                )
+                    await notify_signal_result(
+                        bot=self.bot,
+                        signal=updated_signal,
+                    )
 
-                await session.commit()
+                    processed += 1
 
-                signal = db_signal
+                except Exception:
+                    logger.exception(
+                        "Failed to process signal %s",
+                        signal.id,
+                    )
 
-            await notify_result(
-                self.bot,
-                signal,
+        return processed
+
+    @staticmethod
+    def _calculate_result(
+        *,
+        direction: str,
+        entry_price: float,
+        close_price: float,
+    ) -> str:
+        epsilon = max(
+            abs(entry_price) * 1e-8,
+            1e-10,
+        )
+
+        direction = direction.upper().strip()
+
+        if abs(close_price - entry_price) <= epsilon:
+            return SIGNAL_RESULT_DRAW
+
+        if direction in {"UP", "CALL", "BUY"}:
+            if close_price > entry_price:
+                return SIGNAL_RESULT_WIN
+
+            return SIGNAL_RESULT_LOSS
+
+        if direction in {"DOWN", "PUT", "SELL"}:
+            if close_price < entry_price:
+                return SIGNAL_RESULT_WIN
+
+            return SIGNAL_RESULT_LOSS
+
+        return SIGNAL_RESULT_DRAW
+
+    async def _save_result(
+        self,
+        *,
+        signal_id: int,
+        result: str,
+        close_price: float,
+    ) -> Signal | None:
+        async with get_session() as session:
+            signal = await session.get(
+                Signal,
+                signal_id,
             )
 
+            if signal is None:
+                return None
+
+            if signal.result != SIGNAL_RESULT_PENDING:
+                return signal
+
+            signal.result = result
+            signal.close_price = close_price
+            signal.checked_at = utc_now()
+
+            await session.commit()
+            await session.refresh(signal)
+
+            return signal
+
+
+async def run_result_check_once(
+    bot,
+    market_client: MarketClient | None = None,
+) -> int:
+    checker = SignalResultChecker(
+        bot=bot,
+        market_client=market_client,
+    )
+
+    try:
+        return await checker.check_expired_signals()
+    finally:
+        try:
+            await checker.market.close()
         except Exception:
-            return
+            pass
