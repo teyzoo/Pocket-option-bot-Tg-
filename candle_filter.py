@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -12,95 +12,80 @@ class CandleFilterSettings:
     ignored_last_candles: int = 0
     expires_at: datetime | None = None
 
-    def is_active(self, now: datetime) -> bool:
-        if not self.enabled:
-            return False
-
-        if self.expires_at is None:
-            return True
-
-        return now < self.expires_at
-
 
 class CandleFilter:
-    """
-    Временное исключение последних свечей из анализа.
-
-    Важно:
-    реальные рыночные данные не удаляются.
-    Мы только создаём копию DataFrame без указанного
-    количества последних свечей для аналитики.
-    """
-
     def __init__(self) -> None:
-        self.settings = CandleFilterSettings()
+        self._settings = CandleFilterSettings()
 
     def configure(
         self,
-        enabled: bool,
         ignored_last_candles: int,
-        duration_minutes: int | None = None,
+        duration_minutes: int,
     ) -> CandleFilterSettings:
         ignored_last_candles = max(
             0,
             int(ignored_last_candles),
         )
 
-        expires_at = None
+        duration_minutes = max(
+            1,
+            int(duration_minutes),
+        )
 
-        if duration_minutes is not None:
-            duration_minutes = max(
-                1,
-                int(duration_minutes),
-            )
+        if ignored_last_candles <= 0:
+            self.disable()
+            return self.get_settings()
 
-            expires_at = datetime.utcnow() + timedelta(
-                minutes=duration_minutes
-            )
+        expires_at = datetime.now(
+            timezone.utc
+        ) + timedelta(
+            minutes=duration_minutes
+        )
 
-        self.settings = CandleFilterSettings(
-            enabled=bool(enabled),
+        self._settings = CandleFilterSettings(
+            enabled=True,
             ignored_last_candles=ignored_last_candles,
             expires_at=expires_at,
         )
 
-        return self.settings
+        return self.get_settings()
 
-    def disable(self) -> CandleFilterSettings:
-        self.settings = CandleFilterSettings(
-            enabled=False,
-            ignored_last_candles=0,
-            expires_at=None,
+    def disable(self) -> None:
+        self._settings = CandleFilterSettings()
+
+    def get_settings(self) -> CandleFilterSettings:
+        settings = CandleFilterSettings(
+            enabled=self._settings.enabled,
+            ignored_last_candles=self._settings.ignored_last_candles,
+            expires_at=self._settings.expires_at,
         )
 
-        return self.settings
+        if (
+            settings.enabled
+            and settings.expires_at is not None
+            and settings.expires_at
+            <= datetime.now(timezone.utc)
+        ):
+            self.disable()
+            return CandleFilterSettings()
+
+        return settings
 
     def apply(
         self,
         df: pd.DataFrame,
-        now: datetime | None = None,
     ) -> pd.DataFrame:
-        if df.empty:
+        settings = self.get_settings()
+
+        if not settings.enabled:
             return df.copy()
 
-        if now is None:
-            now = datetime.utcnow()
+        count = settings.ignored_last_candles
 
-        if not self.settings.is_active(now):
+        if count <= 0:
             return df.copy()
 
-        amount = self.settings.ignored_last_candles
-
-        if amount <= 0:
-            return df.copy()
-
-        if amount >= len(df):
+        if len(df) <= count:
             return df.iloc[0:0].copy()
 
-        return df.iloc[:-amount].copy()
-
-    def get_settings(self) -> CandleFilterSettings:
-        return self.settings
-
-
-candle_filter = CandleFilter()
+        return df.iloc[:-count].copy()
