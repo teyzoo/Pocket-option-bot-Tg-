@@ -33,9 +33,21 @@ def _evaluate_row(
     float,
     list[str],
 ]:
-    score = 0.0
-    confirmations = 0
-    reasons: list[str] = []
+
+    scores = {
+        "UP": 0.0,
+        "DOWN": 0.0,
+    }
+
+    confirmations = {
+        "UP": 0,
+        "DOWN": 0,
+    }
+
+    reasons = {
+        "UP": [],
+        "DOWN": [],
+    }
 
     close = _safe_float(row.get("close"))
     ema_fast = _safe_float(row.get("ema_fast"))
@@ -82,140 +94,134 @@ def _evaluate_row(
         return None, 0, 0.0, []
 
     if ema_fast > ema_slow:
-        score += 15.0
-        confirmations += 1
-        reasons.append(
-            "EMA 9 выше EMA 21"
+        scores["UP"] += 15
+        confirmations["UP"] += 1
+        reasons["UP"].append(
+            "EMA"
         )
     elif ema_fast < ema_slow:
-        score -= 15.0
-        confirmations += 1
-        reasons.append(
-            "EMA 9 ниже EMA 21"
+        scores["DOWN"] += 15
+        confirmations["DOWN"] += 1
+        reasons["DOWN"].append(
+            "EMA"
         )
 
     if close > ema_trend:
-        score += 15.0
-        confirmations += 1
-        reasons.append(
-            "Цена выше EMA 50"
+        scores["UP"] += 15
+        confirmations["UP"] += 1
+        reasons["UP"].append(
+            "TREND"
         )
     elif close < ema_trend:
-        score -= 15.0
-        confirmations += 1
-        reasons.append(
-            "Цена ниже EMA 50"
+        scores["DOWN"] += 15
+        confirmations["DOWN"] += 1
+        reasons["DOWN"].append(
+            "TREND"
         )
 
-    if rsi >= 55.0:
-        score += 10.0
-        confirmations += 1
-        reasons.append(
-            "RSI подтверждает рост"
+    if rsi >= 55:
+        scores["UP"] += 10
+        confirmations["UP"] += 1
+        reasons["UP"].append(
+            "RSI"
         )
-    elif rsi <= 45.0:
-        score -= 10.0
-        confirmations += 1
-        reasons.append(
-            "RSI подтверждает снижение"
+    elif rsi <= 45:
+        scores["DOWN"] += 10
+        confirmations["DOWN"] += 1
+        reasons["DOWN"].append(
+            "RSI"
         )
 
     if macd > macd_signal:
-        score += 15.0
-        confirmations += 1
-        reasons.append(
-            "MACD бычий"
+        scores["UP"] += 15
+        confirmations["UP"] += 1
+        reasons["UP"].append(
+            "MACD"
         )
     elif macd < macd_signal:
-        score -= 15.0
-        confirmations += 1
-        reasons.append(
-            "MACD медвежий"
+        scores["DOWN"] += 15
+        confirmations["DOWN"] += 1
+        reasons["DOWN"].append(
+            "MACD"
         )
 
     if close > bb_middle:
-        score += 10.0
-        confirmations += 1
-        reasons.append(
-            "Цена выше средней Bollinger"
+        scores["UP"] += 10
+        confirmations["UP"] += 1
+        reasons["UP"].append(
+            "BB"
         )
     elif close < bb_middle:
-        score -= 10.0
-        confirmations += 1
-        reasons.append(
-            "Цена ниже средней Bollinger"
+        scores["DOWN"] += 10
+        confirmations["DOWN"] += 1
+        reasons["DOWN"].append(
+            "BB"
         )
 
-    if (
-        stoch_k > stoch_d
-        and stoch_k < 80.0
-    ):
-        score += 10.0
-        confirmations += 1
-        reasons.append(
-            "Stochastic подтверждает рост"
+    if stoch_k > stoch_d:
+        scores["UP"] += 10
+        confirmations["UP"] += 1
+        reasons["UP"].append(
+            "STOCHASTIC"
         )
-    elif (
-        stoch_k < stoch_d
-        and stoch_k > 20.0
-    ):
-        score -= 10.0
-        confirmations += 1
-        reasons.append(
-            "Stochastic подтверждает снижение"
+    elif stoch_k < stoch_d:
+        scores["DOWN"] += 10
+        confirmations["DOWN"] += 1
+        reasons["DOWN"].append(
+            "STOCHASTIC"
         )
 
     if bullish:
-        score += 5.0
+        scores["UP"] += 15
+        confirmations["UP"] += 1
+        reasons["UP"].append(
+            "PRICE_ACTION"
+        )
     elif bearish:
-        score -= 5.0
-
-    if score > 0:
-        direction = "UP"
-    elif score < 0:
-        direction = "DOWN"
-    else:
-        return (
-            None,
-            confirmations,
-            50.0,
-            reasons,
+        scores["DOWN"] += 15
+        confirmations["DOWN"] += 1
+        reasons["DOWN"].append(
+            "PRICE_ACTION"
         )
 
-    confidence = (
-        50.0
-        + abs(score) / 95.0 * 50.0
+    if (
+        scores["UP"] <= 0
+        and scores["DOWN"] <= 0
+    ):
+        return None, 0, 0.0, []
+
+    direction = (
+        "UP"
+        if scores["UP"] > scores["DOWN"]
+        else "DOWN"
     )
 
-    confidence = max(
-        0.0,
-        min(
-            100.0,
-            confidence,
+    if scores["UP"] == scores["DOWN"]:
+        return None, 0, 0.0, []
+
+    score = scores[direction]
+    confirmation_count = confirmations[direction]
+
+    if confirmation_count < MIN_SIGNAL_CONFIRMATIONS:
+        return (
+            None,
+            confirmation_count,
+            0.0,
+            reasons[direction],
+        )
+
+    confidence = min(
+        100.0,
+        50.0 + (
+            score / 100.0 * 50.0
         ),
     )
 
-    if confirmations < MIN_SIGNAL_CONFIRMATIONS:
-        return (
-            None,
-            confirmations,
-            confidence,
-            reasons,
-        )
-
-    if confidence < 75.0:
-        return (
-            None,
-            confirmations,
-            confidence,
-            reasons,
-        )
-
     return (
         direction,
-        confirmations,
+        confirmation_count,
         confidence,
-        reasons,
+        reasons[direction],
     )
 
 
@@ -233,6 +239,7 @@ def evaluate_row(
 def run_backtest(
     df: pd.DataFrame,
     expiry_minutes: int,
+    direction: str | None = None,
 ) -> BacktestResult:
 
     empty = BacktestResult(
@@ -282,17 +289,22 @@ def run_backtest(
         minimum_history,
         last_index,
     ):
+
         row = data.iloc[index]
 
         (
-            direction,
+            predicted,
             confirmations,
             confidence,
             _,
         ) = _evaluate_row(row)
 
-        if direction is None:
+        if predicted is None:
             continue
+
+        if direction is not None:
+            if predicted != direction:
+                continue
 
         if confirmations < MIN_SIGNAL_CONFIRMATIONS:
             continue
@@ -329,7 +341,7 @@ def run_backtest(
 
         if actual == "DRAW":
             draws += 1
-        elif actual == direction:
+        elif actual == predicted:
             wins += 1
         else:
             losses += 1
