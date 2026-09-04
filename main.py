@@ -54,11 +54,6 @@ result_checker = SignalResultChecker(
 )
 
 
-# Один advisory-lock PostgreSQL на весь бот.
-#
-# Даже если Render на короткое время поднимет второй процесс
-# во время перезапуска/деплоя, только один процесс получит lock
-# и будет выполнять Telegram polling + scheduler + result checker.
 BOT_LEADER_LOCK_ID = 8921947623
 
 _bot_lock_connection = None
@@ -69,9 +64,8 @@ async def acquire_bot_leader_lock() -> bool:
     """
     Получает PostgreSQL advisory lock.
 
-    Важно:
-    connection необходимо держать открытым всё время,
-    пока процесс является лидером.
+    Только один процесс может одновременно
+    выполнять Telegram polling и фоновые задачи.
     """
 
     global _bot_lock_connection
@@ -102,8 +96,7 @@ async def acquire_bot_leader_lock() -> bool:
                 _bot_lock_acquired = True
 
                 logger.info(
-                    "Bot leader lock acquired. "
-                    "This process will run Telegram polling and background jobs."
+                    "Bot leader lock acquired."
                 )
 
                 return True
@@ -140,7 +133,7 @@ async def acquire_bot_leader_lock() -> bool:
 
 async def release_bot_leader_lock() -> None:
     """
-    Освобождает advisory lock.
+    Освобождает PostgreSQL advisory lock.
     """
 
     global _bot_lock_connection
@@ -163,32 +156,43 @@ async def release_bot_leader_lock() -> None:
                 "lock_id": BOT_LEADER_LOCK_ID,
             },
         )
+
     except Exception:
-        logger.exception("Failed to release bot leader lock")
+        logger.exception(
+            "Failed to release bot leader lock"
+        )
+
     finally:
         try:
             await connection.close()
         except Exception:
-            logger.exception("Failed to close leader lock connection")
+            logger.exception(
+                "Failed to close leader lock connection"
+            )
 
 
 async def polling_loop() -> None:
     """
     Telegram polling.
 
-    Вторая копия бота не должна запускать polling благодаря
-    PostgreSQL advisory lock.
-
-    TelegramConflictError дополнительно обрабатывается,
-    чтобы временный конфликт не убивал приложение.
+    PostgreSQL advisory lock не позволяет двум
+    процессам бота одновременно выполнять polling.
     """
 
     while True:
         try:
-            logger.info("Removing Telegram webhook...")
-            await bot.delete_webhook(drop_pending_updates=False)
+            logger.info(
+                "Removing Telegram webhook..."
+            )
 
-            logger.info("Telegram polling starting...")
+            await bot.delete_webhook(
+                drop_pending_updates=False
+            )
+
+            logger.info(
+                "Telegram polling starting..."
+            )
+
             await dp.start_polling(
                 bot,
                 handle_signals=False,
@@ -200,20 +204,26 @@ async def polling_loop() -> None:
             )
 
         except asyncio.CancelledError:
-            logger.info("Telegram polling task cancelled.")
+            logger.info(
+                "Telegram polling task cancelled."
+            )
             raise
 
         except TelegramConflictError:
             logger.error(
-                "TelegramConflictError: another getUpdates request "
-                "is currently active. Waiting 15 seconds..."
+                "TelegramConflictError: another "
+                "getUpdates request is active. "
+                "Waiting 15 seconds..."
             )
+
             await asyncio.sleep(15)
 
         except Exception:
             logger.exception(
-                "Telegram polling crashed. Restarting in 15 seconds..."
+                "Telegram polling crashed. "
+                "Restarting in 15 seconds..."
             )
+
             await asyncio.sleep(15)
 
 
@@ -223,11 +233,9 @@ async def lifespan(app: FastAPI):
     Application lifecycle.
     """
 
-    global scanner
-    global scheduler
-    global result_checker
-
-    logger.info("Initializing database...")
+    logger.info(
+        "Initializing database..."
+    )
 
     await init_db()
 
@@ -236,20 +244,29 @@ async def lifespan(app: FastAPI):
     background_started = False
 
     try:
-        # Получаем глобальный lock до запуска фоновых задач.
         await acquire_bot_leader_lock()
+
         leader_acquired = True
 
-        logger.info("Starting Telegram polling task...")
+        logger.info(
+            "Starting Telegram polling task..."
+        )
+
         polling_task = asyncio.create_task(
             polling_loop(),
             name="telegram-polling",
         )
 
-        logger.info("Starting signal scheduler...")
+        logger.info(
+            "Starting signal scheduler..."
+        )
+
         await scheduler.start()
 
-        logger.info("Starting signal result checker...")
+        logger.info(
+            "Starting signal result checker..."
+        )
+
         await result_checker.start()
 
         background_started = True
@@ -268,7 +285,9 @@ async def lifespan(app: FastAPI):
         raise
 
     finally:
-        logger.info("Stopping TEYZOO Signal Bot...")
+        logger.info(
+            "Stopping TEYZOO Signal Bot..."
+        )
 
         if background_started:
             try:
@@ -309,7 +328,9 @@ async def lifespan(app: FastAPI):
 
         await close_db()
 
-        logger.info("TEYZOO Signal Bot stopped.")
+        logger.info(
+            "TEYZOO Signal Bot stopped."
+        )
 
 
 app = FastAPI(
