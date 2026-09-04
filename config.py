@@ -274,16 +274,19 @@ TWELVE_DATA_CACHE_SECONDS: Final[int] = max(
 
 
 # ---------------------------------------------------------------------------
-# Scanner candle limit
+# Scanner candle limits
 # ---------------------------------------------------------------------------
 
-# Maximum number of candles that SignalScanner may pass
-# into the analysis pipeline.
-#
-# Kept separate from TWELVE_DATA_MAX_CANDLES because
-# SignalScanner imports MAX_CANDLES directly.
-MAX_CANDLES: Final[int] = max(
+MIN_CANDLES_REQUIRED: Final[int] = max(
     50,
+    _get_int(
+        "MIN_CANDLES_REQUIRED",
+        50,
+    ),
+)
+
+MAX_CANDLES: Final[int] = max(
+    MIN_CANDLES_REQUIRED,
     _get_int(
         "MAX_CANDLES",
         200,
@@ -714,9 +717,14 @@ def validate_config() -> None:
             "TWELVE_DATA_MIN_CANDLES cannot exceed TWELVE_DATA_MAX_CANDLES"
         )
 
-    if MAX_CANDLES < TWELVE_DATA_MIN_CANDLES:
+    if MIN_CANDLES_REQUIRED < 50:
         raise RuntimeError(
-            "MAX_CANDLES cannot be below TWELVE_DATA_MIN_CANDLES"
+            "MIN_CANDLES_REQUIRED cannot be below 50"
+        )
+
+    if MAX_CANDLES < MIN_CANDLES_REQUIRED:
+        raise RuntimeError(
+            "MAX_CANDLES cannot be below MIN_CANDLES_REQUIRED"
         )
 
 
