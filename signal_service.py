@@ -65,7 +65,6 @@ def format_signal_message(
     *,
     include_status: bool = False,
 ) -> str:
-
     pair = format_pair(
         getattr(signal, "pair", "—")
     )
@@ -235,7 +234,6 @@ def format_signal_message(
 async def save_signal(
     candidate: SignalCandidate,
 ) -> Signal:
-
     metadata = getattr(
         candidate,
         "metadata",
@@ -269,25 +267,41 @@ async def save_signal(
             winrate_trades=int(
                 metadata.get(
                     "winrate_trades",
-                    0,
+                    getattr(
+                        candidate,
+                        "winrate_trades",
+                        0,
+                    ),
                 )
             ),
             winrate_wins=int(
                 metadata.get(
                     "winrate_wins",
-                    0,
+                    getattr(
+                        candidate,
+                        "winrate_wins",
+                        0,
+                    ),
                 )
             ),
             winrate_losses=int(
                 metadata.get(
                     "winrate_losses",
-                    0,
+                    getattr(
+                        candidate,
+                        "winrate_losses",
+                        0,
+                    ),
                 )
             ),
             winrate_draws=int(
                 metadata.get(
                     "winrate_draws",
-                    0,
+                    getattr(
+                        candidate,
+                        "winrate_draws",
+                        0,
+                    ),
                 )
             ),
             confirmations=int(
@@ -299,12 +313,12 @@ async def save_signal(
             close_price=None,
             result=SIGNAL_RESULT_PENDING,
             source=candidate.source,
-            reasons=_safe_json(
+            reasons=list(
                 candidate.reasons
             ),
-            metadata=_safe_json(
-                metadata
-            ),
+            # ВАЖНО:
+            # ORM-атрибут называется metadata_json.
+            metadata_json=metadata,
             created_at=candidate.created_at,
             expires_at=candidate.expires_at,
         )
@@ -321,9 +335,7 @@ async def get_approved_users(
     *,
     auto_only: bool = False,
 ) -> list[User]:
-
     async with get_session() as session:
-
         conditions = [
             User.status == "approved",
         ]
@@ -351,7 +363,6 @@ async def add_recipient(
     telegram_id: int,
     message_id: int,
 ) -> SignalRecipient:
-
     async with get_session() as session:
         recipient = SignalRecipient(
             signal_id=signal_id,
@@ -374,10 +385,7 @@ async def send_signal_to_user(
     *,
     chart_path: str | None = None,
 ) -> bool:
-
-    text = format_signal_message(
-        signal
-    )
+    text = format_signal_message(signal)
 
     sent_message = None
 
@@ -388,9 +396,7 @@ async def send_signal_to_user(
         ):
             sent_message = await bot.send_photo(
                 chat_id=telegram_id,
-                photo=FSInputFile(
-                    chart_path
-                ),
+                photo=FSInputFile(chart_path),
                 caption=text,
             )
         else:
@@ -419,7 +425,6 @@ async def broadcast_signal(
     telegram_ids: Iterable[int] | None = None,
     chart_path: str | None = None,
 ) -> int:
-
     if telegram_ids is None:
         users = await get_approved_users(
             auto_only=True
@@ -457,7 +462,6 @@ async def send_manual_signal(
     *,
     chart_path: str | None = None,
 ) -> bool:
-
     try:
         return await send_signal_to_user(
             bot=bot,
@@ -473,7 +477,6 @@ async def send_manual_signal(
 async def get_signal_by_id(
     signal_id: int,
 ) -> Signal | None:
-
     async with get_session() as session:
         return await session.get(
             Signal,
@@ -486,7 +489,6 @@ async def mark_signal_result(
     result: str,
     close_price: float | None,
 ) -> Signal | None:
-
     allowed_results = {
         SIGNAL_RESULT_PENDING,
         SIGNAL_RESULT_WIN,
@@ -531,7 +533,6 @@ async def get_user_signal_history(
     telegram_id: int,
     limit: int = 20,
 ) -> list[Signal]:
-
     limit = max(
         1,
         min(
