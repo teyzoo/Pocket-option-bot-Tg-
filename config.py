@@ -12,6 +12,7 @@ load_dotenv()
 
 def _get(name: str, default: str | None = None) -> str | None:
     value = os.getenv(name)
+
     if value is None:
         return default
 
@@ -27,7 +28,9 @@ def _get_required(name: str) -> str:
     value = _get(name)
 
     if not value:
-        raise RuntimeError(f"Environment variable {name} is required")
+        raise RuntimeError(
+            f"Environment variable {name} is required"
+        )
 
     return value
 
@@ -100,53 +103,93 @@ def _get_int_list(name: str) -> tuple[int, ...]:
 
 
 BOT_TOKEN: Final[str] = _get_required("BOT_TOKEN")
-DATABASE_URL: Final[str] = _get_required("DATABASE_URL")
-TWELVE_DATA_API_KEY: Final[str] = _get_required("TWELVE_DATA_API_KEY")
 
-ADMIN_IDS: Final[tuple[int, ...]] = _get_int_list("ADMIN_IDS")
+DATABASE_URL: Final[str] = _get_required("DATABASE_URL")
+
+TWELVE_DATA_API_KEY: Final[str] = _get_required(
+    "TWELVE_DATA_API_KEY"
+)
+
+
+ADMIN_IDS: Final[tuple[int, ...]] = _get_int_list(
+    "ADMIN_IDS"
+)
 
 OWNER_IDS: Final[tuple[int, ...]] = (
     _get_int_list("OWNER_IDS") or ADMIN_IDS
 )
 
-HOST: Final[str] = _get("HOST", "0.0.0.0") or "0.0.0.0"
-PORT: Final[int] = _get_int("PORT", 10000)
-HEALTH_PATH: Final[str] = _get("HEALTH_PATH", "/health") or "/health"
 
-TIMEZONE: Final[str] = _get("TIMEZONE", "Europe/Moscow") or "Europe/Moscow"
+HOST: Final[str] = (
+    _get("HOST", "0.0.0.0")
+    or "0.0.0.0"
+)
+
+PORT: Final[int] = _get_int(
+    "PORT",
+    10000,
+)
+
+HEALTH_PATH: Final[str] = (
+    _get("HEALTH_PATH", "/health")
+    or "/health"
+)
+
+TIMEZONE: Final[str] = (
+    _get("TIMEZONE", "Europe/Moscow")
+    or "Europe/Moscow"
+)
 
 
 MIN_SIGNAL_WINRATE: Final[float] = max(
     75.0,
-    _get_float("MIN_SIGNAL_WINRATE", 75.0),
+    _get_float(
+        "MIN_SIGNAL_WINRATE",
+        75.0,
+    ),
 )
 
 MIN_SIGNAL_CONFIDENCE: Final[float] = max(
     75.0,
-    _get_float("MIN_SIGNAL_CONFIDENCE", 75.0),
+    _get_float(
+        "MIN_SIGNAL_CONFIDENCE",
+        75.0,
+    ),
 )
 
 MIN_SIGNAL_QUALITY: Final[float] = max(
     75.0,
-    _get_float("MIN_SIGNAL_QUALITY", 75.0),
+    _get_float(
+        "MIN_SIGNAL_QUALITY",
+        75.0,
+    ),
 )
 
 MIN_SIGNAL_CONFIRMATIONS: Final[int] = max(
     3,
-    _get_int("MIN_SIGNAL_CONFIRMATIONS", 3),
+    _get_int(
+        "MIN_SIGNAL_CONFIRMATIONS",
+        3,
+    ),
 )
 
 
 MIN_EXPIRY_MINUTES: Final[int] = max(
     1,
-    _get_int("MIN_EXPIRY_MINUTES", 1),
+    _get_int(
+        "MIN_EXPIRY_MINUTES",
+        1,
+    ),
 )
 
 MAX_EXPIRY_MINUTES: Final[int] = min(
     20,
     max(
         MIN_EXPIRY_MINUTES,
-        _get_int("MAX_EXPIRY_MINUTES", 20),
+        _get_int(
+            "MAX_EXPIRY_MINUTES",
+            20,
+        ),
     ),
 )
 
@@ -154,13 +197,20 @@ DEFAULT_EXPIRY_MINUTES: Final[int] = min(
     MAX_EXPIRY_MINUTES,
     max(
         MIN_EXPIRY_MINUTES,
-        _get_int("DEFAULT_EXPIRY_MINUTES", 5),
+        _get_int(
+            "DEFAULT_EXPIRY_MINUTES",
+            5,
+        ),
     ),
 )
 
 
 MARKET_INTERVAL: Final[str] = (
-    _get("MARKET_INTERVAL", "1min") or "1min"
+    _get(
+        "MARKET_INTERVAL",
+        "1min",
+    )
+    or "1min"
 )
 
 
@@ -179,22 +229,34 @@ TWELVE_DATA_TIMEOUT_SECONDS: Final[float] = _get_float(
 
 TWELVE_DATA_MAX_CANDLES: Final[int] = max(
     100,
-    _get_int("TWELVE_DATA_MAX_CANDLES", 300),
+    _get_int(
+        "TWELVE_DATA_MAX_CANDLES",
+        300,
+    ),
 )
 
 TWELVE_DATA_MIN_CANDLES: Final[int] = max(
     50,
-    _get_int("TWELVE_DATA_MIN_CANDLES", 80),
+    _get_int(
+        "TWELVE_DATA_MIN_CANDLES",
+        80,
+    ),
 )
 
 TWELVE_DATA_MAX_REQUESTS_PER_SCAN: Final[int] = max(
     1,
-    _get_int("TWELVE_DATA_MAX_REQUESTS_PER_SCAN", 8),
+    _get_int(
+        "TWELVE_DATA_MAX_REQUESTS_PER_SCAN",
+        8,
+    ),
 )
 
 TWELVE_DATA_CACHE_SECONDS: Final[int] = max(
     0,
-    _get_int("TWELVE_DATA_CACHE_SECONDS", 45),
+    _get_int(
+        "TWELVE_DATA_CACHE_SECONDS",
+        45,
+    ),
 )
 
 
@@ -205,94 +267,145 @@ AUTO_SIGNAL_ENABLED: Final[bool] = _get_bool(
 
 AUTO_SIGNAL_INTERVAL_MINUTES: Final[int] = max(
     1,
-    _get_int("AUTO_SIGNAL_INTERVAL_MINUTES", 5),
+    _get_int(
+        "AUTO_SIGNAL_INTERVAL_MINUTES",
+        5,
+    ),
 )
 
 SIGNAL_COOLDOWN_MINUTES: Final[int] = max(
     0,
-    _get_int("SIGNAL_COOLDOWN_MINUTES", 5),
+    _get_int(
+        "SIGNAL_COOLDOWN_MINUTES",
+        5,
+    ),
 )
 
 SIGNAL_DEDUPLICATION_MINUTES: Final[int] = max(
     1,
-    _get_int("SIGNAL_DEDUPLICATION_MINUTES", 15),
+    _get_int(
+        "SIGNAL_DEDUPLICATION_MINUTES",
+        15,
+    ),
 )
 
 
 RESULT_CHECK_INTERVAL_SECONDS: Final[int] = max(
     5,
-    _get_int("RESULT_CHECK_INTERVAL_SECONDS", 30),
+    _get_int(
+        "RESULT_CHECK_INTERVAL_SECONDS",
+        30,
+    ),
 )
 
 RESULT_PRICE_TOLERANCE_SECONDS: Final[int] = max(
     30,
-    _get_int("RESULT_PRICE_TOLERANCE_SECONDS", 120),
+    _get_int(
+        "RESULT_PRICE_TOLERANCE_SECONDS",
+        120,
+    ),
 )
 
 
 EMA_FAST: Final[int] = max(
     2,
-    _get_int("EMA_FAST", 9),
+    _get_int(
+        "EMA_FAST",
+        9,
+    ),
 )
 
 EMA_SLOW: Final[int] = max(
     EMA_FAST + 1,
-    _get_int("EMA_SLOW", 21),
+    _get_int(
+        "EMA_SLOW",
+        21,
+    ),
 )
 
 EMA_TREND: Final[int] = max(
     EMA_SLOW + 1,
-    _get_int("EMA_TREND", 50),
+    _get_int(
+        "EMA_TREND",
+        50,
+    ),
 )
 
 
 RSI_PERIOD: Final[int] = max(
     2,
-    _get_int("RSI_PERIOD", 14),
+    _get_int(
+        "RSI_PERIOD",
+        14,
+    ),
 )
 
 
 MACD_FAST: Final[int] = max(
     2,
-    _get_int("MACD_FAST", 12),
+    _get_int(
+        "MACD_FAST",
+        12,
+    ),
 )
 
 MACD_SLOW: Final[int] = max(
     MACD_FAST + 1,
-    _get_int("MACD_SLOW", 26),
+    _get_int(
+        "MACD_SLOW",
+        26,
+    ),
 )
 
 MACD_SIGNAL: Final[int] = max(
     2,
-    _get_int("MACD_SIGNAL", 9),
+    _get_int(
+        "MACD_SIGNAL",
+        9,
+    ),
 )
 
 
 BOLLINGER_PERIOD: Final[int] = max(
     2,
-    _get_int("BOLLINGER_PERIOD", 20),
+    _get_int(
+        "BOLLINGER_PERIOD",
+        20,
+    ),
 )
 
 BOLLINGER_STD: Final[float] = max(
     0.1,
-    _get_float("BOLLINGER_STD", 2.0),
+    _get_float(
+        "BOLLINGER_STD",
+        2.0,
+    ),
 )
 
 
 STOCHASTIC_PERIOD: Final[int] = max(
     2,
-    _get_int("STOCHASTIC_PERIOD", 14),
+    _get_int(
+        "STOCHASTIC_PERIOD",
+        14,
+    ),
 )
 
 STOCHASTIC_SMOOTH: Final[int] = max(
     1,
-    _get_int("STOCHASTIC_SMOOTH", 3),
+    _get_int(
+        "STOCHASTIC_SMOOTH",
+        3,
+    ),
 )
 
 
 ATR_PERIOD: Final[int] = max(
     2,
-    _get_int("ATR_PERIOD", 14),
+    _get_int(
+        "ATR_PERIOD",
+        14,
+    ),
 )
 
 
@@ -303,17 +416,26 @@ CHART_ENABLED: Final[bool] = _get_bool(
 
 CHART_WIDTH: Final[float] = max(
     6.0,
-    _get_float("CHART_WIDTH", 12.0),
+    _get_float(
+        "CHART_WIDTH",
+        12.0,
+    ),
 )
 
 CHART_HEIGHT: Final[float] = max(
     4.0,
-    _get_float("CHART_HEIGHT", 8.0),
+    _get_float(
+        "CHART_HEIGHT",
+        8.0,
+    ),
 )
 
 CHART_DPI: Final[int] = max(
     72,
-    _get_int("CHART_DPI", 120),
+    _get_int(
+        "CHART_DPI",
+        120,
+    ),
 )
 
 
@@ -324,38 +446,60 @@ CANDLE_FILTER_ENABLED: Final[bool] = _get_bool(
 
 CANDLE_FILTER_IGNORED_LAST: Final[int] = max(
     0,
-    _get_int("CANDLE_FILTER_IGNORED_LAST", 0),
+    _get_int(
+        "CANDLE_FILTER_IGNORED_LAST",
+        0,
+    ),
 )
 
 CANDLE_FILTER_DURATION_MINUTES: Final[int] = max(
     1,
-    _get_int("CANDLE_FILTER_DURATION_MINUTES", 60),
+    _get_int(
+        "CANDLE_FILTER_DURATION_MINUTES",
+        60,
+    ),
 )
 
 
 DB_POOL_SIZE: Final[int] = max(
     1,
-    _get_int("DB_POOL_SIZE", 5),
+    _get_int(
+        "DB_POOL_SIZE",
+        5,
+    ),
 )
 
 DB_MAX_OVERFLOW: Final[int] = max(
     0,
-    _get_int("DB_MAX_OVERFLOW", 5),
+    _get_int(
+        "DB_MAX_OVERFLOW",
+        5,
+    ),
 )
 
 DB_POOL_TIMEOUT: Final[int] = max(
     5,
-    _get_int("DB_POOL_TIMEOUT", 30),
+    _get_int(
+        "DB_POOL_TIMEOUT",
+        30,
+    ),
 )
 
 DB_POOL_RECYCLE: Final[int] = max(
     60,
-    _get_int("DB_POOL_RECYCLE", 1800),
+    _get_int(
+        "DB_POOL_RECYCLE",
+        1800,
+    ),
 )
 
 
 LOG_LEVEL: Final[str] = (
-    _get("LOG_LEVEL", "INFO") or "INFO"
+    _get(
+        "LOG_LEVEL",
+        "INFO",
+    )
+    or "INFO"
 ).upper()
 
 
@@ -371,6 +515,7 @@ NORMAL_PAIRS: Final[tuple[str, ...]] = (
     "EUR/JPY",
     "GBP/JPY",
 )
+
 
 # OTC intentionally remains empty.
 # No fake OTC prices or candles are generated.
@@ -388,6 +533,15 @@ USER_PENDING: Final[str] = "pending"
 USER_APPROVED: Final[str] = "approved"
 USER_REJECTED: Final[str] = "rejected"
 USER_BLACKLISTED: Final[str] = "blacklisted"
+
+
+# Backward-compatible aliases.
+# These names are used by services.py.
+# USER_* remain the canonical status names.
+ACCESS_PENDING: Final[str] = USER_PENDING
+ACCESS_APPROVED: Final[str] = USER_APPROVED
+ACCESS_REJECTED: Final[str] = USER_REJECTED
+ACCESS_BLACKLISTED: Final[str] = USER_BLACKLISTED
 
 
 MARKET_REGULAR: Final[str] = "regular"
@@ -419,13 +573,19 @@ class ConfigSnapshot:
 
 def validate_config() -> None:
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN is empty")
+        raise RuntimeError(
+            "BOT_TOKEN is empty"
+        )
 
     if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL is empty")
+        raise RuntimeError(
+            "DATABASE_URL is empty"
+        )
 
     if not TWELVE_DATA_API_KEY:
-        raise RuntimeError("TWELVE_DATA_API_KEY is empty")
+        raise RuntimeError(
+            "TWELVE_DATA_API_KEY is empty"
+        )
 
     if not ADMIN_IDS:
         raise RuntimeError(
