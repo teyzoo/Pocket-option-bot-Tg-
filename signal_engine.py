@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any
 
 import pandas as pd
 
-from backtest import run_backtest
+from backtest import evaluate_row, run_backtest
 from config import (
     MIN_SIGNAL_CONFIDENCE,
     MIN_SIGNAL_CONFIRMATIONS,
@@ -19,19 +19,32 @@ from probability import probability_calibrator
 
 class SignalEngine:
     """
-    Основной движок анализа торгового сигнала.
+    Основной движок поиска сигналов.
 
-    Задача:
-        1. Подготовить свечи и индикаторы.
-        2. Определить направление.
-        3. Проверить историческую вероятность через backtest.
-        4. Рассчитать quality/confidence.
-        5. Вернуть SignalCandidate только если сигнал
-           проходит установленные фильтры.
+    Логика:
 
-    Важно:
-        Движок НЕ создаёт искусственные сигналы.
-        Если условия не выполнены — возвращается None.
+        свежие 1m свечи
+                ↓
+        технические индикаторы
+                ↓
+        текущее направление
+                ↓
+        исторический backtest
+                ↓
+        WINRATE >= заданного порога
+                ↓
+        QUALITY / CONFIDENCE
+                ↓
+        SignalCandidate
+
+    Важный принцип:
+        мы НЕ создаём искусственный сигнал.
+
+        Если текущая ситуация не подтверждена исторически,
+        возвращается None.
+
+    При этом текущий сигнал и backtest используют
+    одну и ту же систему оценки из backtest.py.
     """
 
     def __init__(
@@ -44,11 +57,13 @@ class SignalEngine:
         self.min_winrate = float(min_winrate)
         self.min_confidence = float(min_confidence)
         self.min_quality = float(min_quality)
-        self.min_confirmations = int(min_confirmations)
+        self.min_confirmations = int(
+            min_confirmations
+        )
 
-    # ------------------------------------------------------------------
+    # ============================================================
     # PUBLIC API
-    # ------------------------------------------------------------------
+    # ============================================================
 
     def analyze(
         self,
@@ -57,50 +72,98 @@ class SignalEngine:
         df: pd.DataFrame,
         expiry_minutes: int,
         source: str = "manual",
-    ) -> Optional[SignalCandidate]:
+    ) -> SignalCandidate | None:
         """
-        Анализ одной пары.
+        Анализирует одну пару для конкретного времени экспирации.
 
-        Возвращает:
-            SignalCandidate — если найден сильный сигнал.
-            None — если сигнал не прошёл фильтры.
+        Возвращает SignalCandidate только при выполнении
+        всех обязательных условий.
         """
+
+        # --------------------------------------------------------
+        # Проверяем expiry
+        # --------------------------------------------------------
+
+        try:
+            expiry = int(expiry_minutes)
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None
+
+        if expiry < 1 or expiry > 20:
+            return None
+
+        # --------------------------------------------------------
+        # Проверяем данные
+        # --------------------------------------------------------
 
         if df is None or df.empty:
             return None
 
-        if expiry_minutes < 1 or expiry_minutes > 20:
-            return None
-
-        prepared = self._prepare_dataframe(df)
+        prepared = self._prepare_dataframe(
+            df
+        )
 
         if prepared is None:
             return None
 
-        if len(prepared) < 60:
+        # Для EMA 50 + backtest нужна нормальная история.
+        if len(prepared) < 80:
             return None
 
+        # --------------------------------------------------------
+        # ТЕКУЩАЯ СИТУАЦИЯ
+        # --------------------------------------------------------
+
         try:
-            current = latest_indicators(prepared)
+            current = latest_indicators(
+                prepared
+            )
         except Exception:
             return None
 
         if not current:
             return None
 
-        direction = self._detect_direction(current)
+        # --------------------------------------------------------
+        # Используем ТОЧНО ту же систему,
+        # что и backtest.py.
+        # --------------------------------------------------------
 
-        if direction is None:
+        try:
+            current_row = prepared.iloc[-1]
+
+            (
+                direction,
+                confirmations,
+                current_confidence,
+                current_reasons,
+            ) = evaluate_row(
+                current_row
+            )
+
+        except Exception:
             return None
 
-        # --------------------------------------------------------------
-        # Исторический backtest по конкретному направлению
-        # --------------------------------------------------------------
+        if direction not in {
+            "UP",
+            "DOWN",
+        }:
+            return None
+
+        if confirmations < self.min_confirmations:
+            return None
+
+        # --------------------------------------------------------
+        # Исторический backtest
+        # --------------------------------------------------------
 
         try:
             backtest_result = run_backtest(
                 prepared,
-                expiry_minutes,
+                expiry,
                 direction=direction,
             )
         except Exception:
@@ -109,167 +172,294 @@ class SignalEngine:
         if backtest_result is None:
             return None
 
-        decisive_trades = int(
-            getattr(backtest_result, "decisive_trades", 0)
+        trades = int(
+            getattr(
+                backtest_result,
+                "decisive_trades",
+                0,
+            )
         )
 
-        wins = int(getattr(backtest_result, "wins", 0))
-        losses = int(getattr(backtest_result, "losses", 0))
-        draws = int(getattr(backtest_result, "draws", 0))
+        wins = int(
+            getattr(
+                backtest_result,
+                "wins",
+                0,
+            )
+        )
 
-        if decisive_trades <= 0:
+        losses = int(
+            getattr(
+                backtest_result,
+                "losses",
+                0,
+            )
+        )
+
+        draws = int(
+            getattr(
+                backtest_result,
+                "draws",
+                0,
+            )
+        )
+
+        # Нельзя считать WINRATE по нулевой выборке.
+        if trades < 10:
             return None
 
         historical_winrate = float(
-            getattr(backtest_result, "winrate", 0.0)
+            getattr(
+                backtest_result,
+                "winrate",
+                0.0,
+            )
+            or 0.0
         )
 
-        # --------------------------------------------------------------
+        # --------------------------------------------------------
+        # ГЛАВНЫЙ ФИЛЬТР
+        #
+        # Именно здесь сохраняем требование пользователя:
+        # исторический WINRATE >= 75%.
+        # --------------------------------------------------------
+
+        if (
+            historical_winrate
+            < self.min_winrate
+        ):
+            return None
+
+        # --------------------------------------------------------
         # Probability calibrator
-        # --------------------------------------------------------------
+        #
+        # Он использует тот же backtest,
+        # поэтому не подменяем реальную статистику.
+        # --------------------------------------------------------
+
+        calibrated_winrate = historical_winrate
 
         try:
-            probability = probability_calibrator.estimate(
-                prepared,
-                expiry_minutes,
-                direction=direction,
-            )
-        except TypeError:
-            # Совместимость с более старой реализацией calibrator.
-            try:
-                probability = probability_calibrator.estimate(
+            estimate = (
+                probability_calibrator.estimate(
                     prepared,
-                    expiry_minutes,
+                    expiry,
+                    direction=direction,
                 )
-            except Exception:
-                probability = None
+            )
+
+            if estimate is not None:
+                estimate_winrate = float(
+                    getattr(
+                        estimate,
+                        "winrate",
+                        0.0,
+                    )
+                    or 0.0
+                )
+
+                if estimate_winrate > 0:
+                    calibrated_winrate = (
+                        estimate_winrate
+                    )
+
         except Exception:
-            probability = None
+            # Если calibrator не сработал,
+            # исторический backtest всё равно остаётся
+            # действительным источником статистики.
+            calibrated_winrate = (
+                historical_winrate
+            )
 
-        calibrated_probability = self._extract_probability(
-            probability,
-            historical_winrate,
-        )
+        # --------------------------------------------------------
+        # Итоговый WINRATE.
+        #
+        # Берём более консервативное значение.
+        # --------------------------------------------------------
 
-        # Для итогового winrate используем более консервативное значение.
         effective_winrate = min(
             historical_winrate,
-            calibrated_probability,
+            calibrated_winrate,
         )
-
-        # Если calibrator не смог дать значение, не блокируем
-        # сигнал только из-за отсутствия калибровки — backtest
-        # остаётся главным историческим источником.
-        if calibrated_probability <= 0:
-            effective_winrate = historical_winrate
-
-        # --------------------------------------------------------------
-        # Confidence
-        # --------------------------------------------------------------
-
-        confidence = self._calculate_confidence(
-            current=current,
-            historical_winrate=historical_winrate,
-            calibrated_probability=calibrated_probability,
-            confirmations=self._count_confirmations(current, direction),
-        )
-
-        # --------------------------------------------------------------
-        # Quality
-        # --------------------------------------------------------------
-
-        quality, reasons, confirmations = self._calculate_quality(
-            current=current,
-            direction=direction,
-            historical_winrate=historical_winrate,
-            calibrated_probability=calibrated_probability,
-            backtest_result=backtest_result,
-        )
-
-        # --------------------------------------------------------------
-        # Финальный фильтр
-        # --------------------------------------------------------------
 
         if effective_winrate < self.min_winrate:
             return None
 
+        # --------------------------------------------------------
+        # CONFIDENCE
+        # --------------------------------------------------------
+
+        confidence = self._calculate_confidence(
+            current_confidence=current_confidence,
+            historical_winrate=historical_winrate,
+            confirmations=confirmations,
+        )
+
         if confidence < self.min_confidence:
             return None
+
+        # --------------------------------------------------------
+        # QUALITY
+        # --------------------------------------------------------
+
+        quality = self._calculate_quality(
+            current_confidence=current_confidence,
+            historical_winrate=historical_winrate,
+            effective_winrate=effective_winrate,
+            confirmations=confirmations,
+            trades=trades,
+        )
 
         if quality < self.min_quality:
             return None
 
-        if confirmations < self.min_confirmations:
-            return None
+        # --------------------------------------------------------
+        # ENTRY PRICE
+        # --------------------------------------------------------
 
         price = self._safe_float(
-            current.get("price"),
-            prepared["close"].iloc[-1],
+            current.get("price")
         )
 
-        now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(minutes=expiry_minutes)
+        if price is None:
+            price = self._safe_float(
+                prepared.iloc[-1].get(
+                    "close"
+                )
+            )
 
-        indicators = self._clean_indicators(current)
+        if price is None:
+            return None
 
-        metadata: Dict[str, Any] = {
-            "historical_winrate": round(historical_winrate, 2),
-            "calibrated_probability": round(
-                calibrated_probability,
+        # --------------------------------------------------------
+        # ВРЕМЯ СОЗДАНИЯ / ЭКСПИРАЦИИ
+        # --------------------------------------------------------
+
+        created_at = datetime.now(
+            timezone.utc
+        )
+
+        expires_at = (
+            created_at
+            + timedelta(
+                minutes=expiry
+            )
+        )
+
+        # --------------------------------------------------------
+        # REASONS
+        # --------------------------------------------------------
+
+        reasons = list(
+            current_reasons
+            or []
+        )
+
+        reasons = self._build_reasons(
+            reasons=reasons,
+            direction=direction,
+            historical_winrate=historical_winrate,
+            confirmations=confirmations,
+            trades=trades,
+        )
+
+        # --------------------------------------------------------
+        # INDICATORS
+        # --------------------------------------------------------
+
+        indicators = self._clean_indicators(
+            current
+        )
+
+        # --------------------------------------------------------
+        # METADATA
+        # --------------------------------------------------------
+
+        metadata = {
+            "current_confidence": round(
+                float(current_confidence),
+                2,
+            ),
+            "historical_winrate": round(
+                historical_winrate,
+                2,
+            ),
+            "calibrated_winrate": round(
+                calibrated_winrate,
                 2,
             ),
             "effective_winrate": round(
                 effective_winrate,
                 2,
             ),
-            "backtest_trades": decisive_trades,
+            "backtest_trades": trades,
             "backtest_wins": wins,
             "backtest_losses": losses,
             "backtest_draws": draws,
+            "signal_candle_time": self._get_last_candle_time(
+                prepared
+            ),
+            "timeframe": "1min",
+            "analysis": "current_plus_historical",
         }
+
+        # --------------------------------------------------------
+        # ГОТОВЫЙ КАНДИДАТ
+        # --------------------------------------------------------
 
         return SignalCandidate(
             pair=pair,
             direction=direction,
-            expiry_minutes=expiry_minutes,
-            confidence=round(confidence, 2),
-            quality=round(quality, 2),
-            winrate=round(effective_winrate, 2),
+            expiry_minutes=expiry,
+            confidence=round(
+                confidence,
+                2,
+            ),
+            quality=round(
+                quality,
+                2,
+            ),
+            winrate=round(
+                effective_winrate,
+                2,
+            ),
             entry_price=price,
-            created_at=now,
+            created_at=created_at,
             expires_at=expires_at,
             source=source,
-            market=self._market_name(market),
+            market=self._market_name(
+                market
+            ),
             reasons=reasons,
             confirmations=confirmations,
             indicators=indicators,
             chart_path=None,
             metadata=metadata,
-            winrate_trades=decisive_trades,
+            winrate_trades=trades,
             winrate_wins=wins,
             winrate_losses=losses,
             winrate_draws=draws,
         )
 
-    # ------------------------------------------------------------------
+    # ============================================================
     # DATA PREPARATION
-    # ------------------------------------------------------------------
+    # ============================================================
 
     @staticmethod
     def _prepare_dataframe(
         df: pd.DataFrame,
-    ) -> Optional[pd.DataFrame]:
+    ) -> pd.DataFrame | None:
         try:
             result = df.copy()
 
-            required = [
+            required = (
                 "datetime",
                 "open",
                 "high",
                 "low",
                 "close",
                 "volume",
-            ]
+            )
 
             for column in required:
                 if column not in result.columns:
@@ -277,48 +467,53 @@ class SignalEngine:
 
             result["datetime"] = pd.to_datetime(
                 result["datetime"],
+                utc=True,
                 errors="coerce",
             )
 
-            numeric_columns = [
+            for column in (
                 "open",
                 "high",
                 "low",
                 "close",
                 "volume",
-            ]
-
-            for column in numeric_columns:
+            ):
                 result[column] = pd.to_numeric(
                     result[column],
                     errors="coerce",
                 )
 
             result = result.dropna(
-                subset=required,
+                subset=[
+                    "datetime",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                ]
             )
 
-            result = result.sort_values(
-                "datetime",
+            result = (
+                result
+                .sort_values(
+                    "datetime"
+                )
+                .drop_duplicates(
+                    subset=[
+                        "datetime"
+                    ],
+                    keep="last",
+                )
+                .reset_index(
+                    drop=True
+                )
             )
 
-            result = result.drop_duplicates(
-                subset=["datetime"],
-                keep="last",
-            )
-
-            result = result.reset_index(
-                drop=True,
-            )
-
-            if len(result) < 60:
+            if len(result) < 80:
                 return None
 
-            result = calculate_indicators(result)
-
-            result = result.replace(
-                [float("inf"), float("-inf")],
-                pd.NA,
+            result = calculate_indicators(
+                result
             )
 
             return result
@@ -326,684 +521,279 @@ class SignalEngine:
         except Exception:
             return None
 
-    # ------------------------------------------------------------------
-    # DIRECTION
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _detect_direction(
-        indicators: Dict[str, Any],
-    ) -> Optional[str]:
-        """
-        Определение направления на основе нескольких подтверждений.
-
-        Используются:
-            EMA
-            TREND
-            RSI
-            MACD
-            Bollinger
-            Stochastic
-            Price Action
-        """
-
-        bullish = 0
-        bearish = 0
-
-        # EMA
-        ema_fast = SignalEngine._safe_float(
-            indicators.get("ema_fast")
-        )
-        ema_slow = SignalEngine._safe_float(
-            indicators.get("ema_slow")
-        )
-
-        if ema_fast is not None and ema_slow is not None:
-            if ema_fast > ema_slow:
-                bullish += 1
-            elif ema_fast < ema_slow:
-                bearish += 1
-
-        # TREND / EMA trend
-        ema_trend = SignalEngine._safe_float(
-            indicators.get("ema_trend")
-        )
-
-        price = SignalEngine._safe_float(
-            indicators.get("price")
-        )
-
-        if ema_trend is not None and price is not None:
-            if price > ema_trend:
-                bullish += 1
-            elif price < ema_trend:
-                bearish += 1
-
-        # RSI
-        rsi = SignalEngine._safe_float(
-            indicators.get("rsi")
-        )
-
-        if rsi is not None:
-            if rsi >= 52:
-                bullish += 1
-            elif rsi <= 48:
-                bearish += 1
-
-        # MACD
-        macd = SignalEngine._safe_float(
-            indicators.get("macd")
-        )
-        macd_signal = SignalEngine._safe_float(
-            indicators.get("macd_signal")
-        )
-
-        if macd is not None and macd_signal is not None:
-            if macd > macd_signal:
-                bullish += 1
-            elif macd < macd_signal:
-                bearish += 1
-
-        # Bollinger
-        bb_middle = SignalEngine._safe_float(
-            indicators.get("bb_middle")
-        )
-
-        if price is not None and bb_middle is not None:
-            if price > bb_middle:
-                bullish += 1
-            elif price < bb_middle:
-                bearish += 1
-
-        # Stochastic
-        stoch_k = SignalEngine._safe_float(
-            indicators.get("stoch_k")
-        )
-        stoch_d = SignalEngine._safe_float(
-            indicators.get("stoch_d")
-        )
-
-        if stoch_k is not None and stoch_d is not None:
-            if stoch_k > stoch_d:
-                bullish += 1
-            elif stoch_k < stoch_d:
-                bearish += 1
-
-        # Price action
-        bullish_candle = bool(
-            indicators.get("bullish")
-        )
-        bearish_candle = bool(
-            indicators.get("bearish")
-        )
-
-        if bullish_candle:
-            bullish += 1
-
-        if bearish_candle:
-            bearish += 1
-
-        # Требуем явного перевеса.
-        if bullish >= 4 and bullish > bearish:
-            return "UP"
-
-        if bearish >= 4 and bearish > bullish:
-            return "DOWN"
-
-        return None
-
-    # ------------------------------------------------------------------
-    # CONFIRMATIONS
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _count_confirmations(
-        indicators: Dict[str, Any],
-        direction: str,
-    ) -> int:
-        confirmations = 0
-
-        price = SignalEngine._safe_float(
-            indicators.get("price")
-        )
-
-        ema_fast = SignalEngine._safe_float(
-            indicators.get("ema_fast")
-        )
-
-        ema_slow = SignalEngine._safe_float(
-            indicators.get("ema_slow")
-        )
-
-        ema_trend = SignalEngine._safe_float(
-            indicators.get("ema_trend")
-        )
-
-        rsi = SignalEngine._safe_float(
-            indicators.get("rsi")
-        )
-
-        macd = SignalEngine._safe_float(
-            indicators.get("macd")
-        )
-
-        macd_signal = SignalEngine._safe_float(
-            indicators.get("macd_signal")
-        )
-
-        bb_middle = SignalEngine._safe_float(
-            indicators.get("bb_middle")
-        )
-
-        stoch_k = SignalEngine._safe_float(
-            indicators.get("stoch_k")
-        )
-
-        stoch_d = SignalEngine._safe_float(
-            indicators.get("stoch_d")
-        )
-
-        if direction == "UP":
-            if (
-                ema_fast is not None
-                and ema_slow is not None
-                and ema_fast > ema_slow
-            ):
-                confirmations += 1
-
-            if (
-                price is not None
-                and ema_trend is not None
-                and price > ema_trend
-            ):
-                confirmations += 1
-
-            if rsi is not None and rsi >= 52:
-                confirmations += 1
-
-            if (
-                macd is not None
-                and macd_signal is not None
-                and macd > macd_signal
-            ):
-                confirmations += 1
-
-            if (
-                price is not None
-                and bb_middle is not None
-                and price > bb_middle
-            ):
-                confirmations += 1
-
-            if (
-                stoch_k is not None
-                and stoch_d is not None
-                and stoch_k > stoch_d
-            ):
-                confirmations += 1
-
-            if indicators.get("bullish"):
-                confirmations += 1
-
-        elif direction == "DOWN":
-            if (
-                ema_fast is not None
-                and ema_slow is not None
-                and ema_fast < ema_slow
-            ):
-                confirmations += 1
-
-            if (
-                price is not None
-                and ema_trend is not None
-                and price < ema_trend
-            ):
-                confirmations += 1
-
-            if rsi is not None and rsi <= 48:
-                confirmations += 1
-
-            if (
-                macd is not None
-                and macd_signal is not None
-                and macd < macd_signal
-            ):
-                confirmations += 1
-
-            if (
-                price is not None
-                and bb_middle is not None
-                and price < bb_middle
-            ):
-                confirmations += 1
-
-            if (
-                stoch_k is not None
-                and stoch_d is not None
-                and stoch_k < stoch_d
-            ):
-                confirmations += 1
-
-            if indicators.get("bearish"):
-                confirmations += 1
-
-        return confirmations
-
-    # ------------------------------------------------------------------
-    # QUALITY
-    # ------------------------------------------------------------------
-
-    def _calculate_quality(
-        self,
-        current: Dict[str, Any],
-        direction: str,
-        historical_winrate: float,
-        calibrated_probability: float,
-        backtest_result: Any,
-    ) -> tuple[float, list[str], int]:
-        confirmations = self._count_confirmations(
-            current,
-            direction,
-        )
-
-        reasons: list[str] = []
-
-        score = 0.0
-
-        # --------------------------------------------------------------
-        # Historical probability: 30 points
-        # --------------------------------------------------------------
-
-        probability_value = max(
-            historical_winrate,
-            calibrated_probability,
-        )
-
-        probability_component = self._scale(
-            probability_value,
-            50.0,
-            100.0,
-        )
-
-        score += probability_component * 30.0
-
-        if probability_value >= 85:
-            reasons.append(
-                f"Историческая вероятность {probability_value:.1f}%"
-            )
-        elif probability_value >= 75:
-            reasons.append(
-                f"Вероятность {probability_value:.1f}%"
-            )
-
-        # --------------------------------------------------------------
-        # Confirmations: 30 points
-        # --------------------------------------------------------------
-
-        confirmation_ratio = confirmations / 7.0
-        score += confirmation_ratio * 30.0
-
-        if confirmations >= 6:
-            reasons.append(
-                f"Сильные подтверждения: {confirmations}/7"
-            )
-        elif confirmations >= 4:
-            reasons.append(
-                f"Подтверждения: {confirmations}/7"
-            )
-
-        # --------------------------------------------------------------
-        # Trend quality: 15 points
-        # --------------------------------------------------------------
-
-        if self._trend_matches(
-            current,
-            direction,
-        ):
-            score += 15.0
-            reasons.append("Тренд подтверждает направление")
-
-        # --------------------------------------------------------------
-        # Momentum: 15 points
-        # --------------------------------------------------------------
-
-        if self._momentum_matches(
-            current,
-            direction,
-        ):
-            score += 15.0
-            reasons.append("Импульс подтверждает направление")
-
-        # --------------------------------------------------------------
-        # Backtest reliability: 10 points
-        # --------------------------------------------------------------
-
-        reliable = bool(
-            getattr(
-                backtest_result,
-                "reliable",
-                False,
-            )
-        )
-
-        if reliable:
-            score += 10.0
-            reasons.append("Достаточная историческая выборка")
-
-        quality = min(
-            100.0,
-            max(
-                0.0,
-                score,
-            ),
-        )
-
-        if not reasons:
-            reasons.append(
-                "Недостаточно подтверждений"
-            )
-
-        return (
-            quality,
-            reasons,
-            confirmations,
-        )
-
-    # ------------------------------------------------------------------
+    # ============================================================
     # CONFIDENCE
-    # ------------------------------------------------------------------
+    # ============================================================
 
     @staticmethod
     def _calculate_confidence(
-        current: Dict[str, Any],
+        current_confidence: float,
         historical_winrate: float,
-        calibrated_probability: float,
         confirmations: int,
     ) -> float:
         """
-        Итоговая confidence.
+        Confidence текущей ситуации.
 
-        Историческая вероятность — основа.
-        Индикаторные подтверждения добавляют/убавляют уверенность.
+        Не делаем искусственный разгон значения.
+        Историческая статистика и текущие подтверждения
+        влияют на итог.
         """
 
-        base = max(
-            historical_winrate,
-            calibrated_probability,
-        )
-
-        confirmation_bonus = (
-            confirmations / 7.0
-        ) * 10.0
-
-        trend_bonus = (
-            5.0
-            if SignalEngine._trend_strength(current) >= 1.0
-            else 0.0
-        )
-
-        confidence = (
-            base
-            + confirmation_bonus
-            + trend_bonus
-        )
-
-        return min(
-            100.0,
-            max(
-                0.0,
-                confidence,
+        current = max(
+            0.0,
+            min(
+                100.0,
+                float(
+                    current_confidence
+                    or 0.0
+                ),
             ),
         )
 
-    # ------------------------------------------------------------------
-    # TREND / MOMENTUM
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _trend_matches(
-        indicators: Dict[str, Any],
-        direction: str,
-    ) -> bool:
-        price = SignalEngine._safe_float(
-            indicators.get("price")
-        )
-        ema_fast = SignalEngine._safe_float(
-            indicators.get("ema_fast")
-        )
-        ema_slow = SignalEngine._safe_float(
-            indicators.get("ema_slow")
-        )
-        ema_trend = SignalEngine._safe_float(
-            indicators.get("ema_trend")
-        )
-
-        if (
-            price is None
-            or ema_fast is None
-            or ema_slow is None
-            or ema_trend is None
-        ):
-            return False
-
-        if direction == "UP":
-            return (
-                price > ema_fast
-                and ema_fast > ema_slow
-                and price > ema_trend
-            )
-
-        if direction == "DOWN":
-            return (
-                price < ema_fast
-                and ema_fast < ema_slow
-                and price < ema_trend
-            )
-
-        return False
-
-    @staticmethod
-    def _momentum_matches(
-        indicators: Dict[str, Any],
-        direction: str,
-    ) -> bool:
-        rsi = SignalEngine._safe_float(
-            indicators.get("rsi")
-        )
-
-        macd = SignalEngine._safe_float(
-            indicators.get("macd")
-        )
-
-        macd_signal = SignalEngine._safe_float(
-            indicators.get("macd_signal")
-        )
-
-        if rsi is None:
-            return False
-
-        if macd is None or macd_signal is None:
-            return False
-
-        if direction == "UP":
-            return (
-                rsi >= 52
-                and macd > macd_signal
-            )
-
-        if direction == "DOWN":
-            return (
-                rsi <= 48
-                and macd < macd_signal
-            )
-
-        return False
-
-    @staticmethod
-    def _trend_strength(
-        indicators: Dict[str, Any],
-    ) -> float:
-        price = SignalEngine._safe_float(
-            indicators.get("price")
-        )
-        ema_fast = SignalEngine._safe_float(
-            indicators.get("ema_fast")
-        )
-        ema_slow = SignalEngine._safe_float(
-            indicators.get("ema_slow")
-        )
-
-        if (
-            price is None
-            or ema_fast is None
-            or ema_slow is None
-        ):
-            return 0.0
-
-        denominator = abs(ema_slow)
-
-        if denominator == 0:
-            return 0.0
-
-        distance = abs(
-            ema_fast - ema_slow
-        ) / denominator
-
-        return distance * 10000.0
-
-    # ------------------------------------------------------------------
-    # HELPERS
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_probability(
-        probability: Any,
-        fallback: float,
-    ) -> float:
-        if probability is None:
-            return float(fallback)
-
-        if isinstance(
-            probability,
-            (int, float),
-        ):
-            return max(
-                0.0,
-                min(
-                    100.0,
-                    float(probability),
+        historical = max(
+            0.0,
+            min(
+                100.0,
+                float(
+                    historical_winrate
+                    or 0.0
                 ),
-            )
+            ),
+        )
 
-        for attr in (
-            "probability",
-            "winrate",
-            "value",
-            "estimate",
-        ):
-            value = getattr(
-                probability,
-                attr,
-                None,
-            )
+        # Текущая техническая оценка — основной компонент.
+        # Историческая статистика — второй.
+        confidence = (
+            current * 0.60
+            + historical * 0.40
+        )
 
-            if value is not None:
-                try:
-                    return max(
-                        0.0,
-                        min(
-                            100.0,
-                            float(value),
-                        ),
-                    )
-                except (
-                    TypeError,
-                    ValueError,
-                ):
-                    pass
+        # Небольшое преимущество за дополнительные
+        # подтверждения сверх минимальных.
+        extra_confirmations = max(
+            0,
+            confirmations - 4,
+        )
 
-        return float(fallback)
-
-    @staticmethod
-    def _clean_indicators(
-        indicators: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        result: Dict[str, Any] = {}
-
-        for key, value in indicators.items():
-            if isinstance(
-                value,
-                (int, float),
-            ):
-                if pd.isna(value):
-                    continue
-
-                result[key] = round(
-                    float(value),
-                    8,
-                )
-
-            elif isinstance(
-                value,
-                bool,
-            ):
-                result[key] = value
-
-            elif value is not None:
-                try:
-                    if hasattr(value, "item"):
-                        result[key] = value.item()
-                    else:
-                        result[key] = value
-                except Exception:
-                    result[key] = str(value)
-
-        return result
-
-    @staticmethod
-    def _safe_float(
-        value: Any,
-        default: Any = None,
-    ) -> Optional[float]:
-        if value is None:
-            return default
-
-        try:
-            number = float(value)
-
-            if pd.isna(number):
-                return default
-
-            return number
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-            return default
-
-    @staticmethod
-    def _scale(
-        value: float,
-        minimum: float,
-        maximum: float,
-    ) -> float:
-        if maximum <= minimum:
-            return 0.0
-
-        normalized = (
-            value - minimum
-        ) / (
-            maximum - minimum
+        confidence += min(
+            5.0,
+            extra_confirmations * 1.5,
         )
 
         return max(
             0.0,
             min(
-                1.0,
-                normalized,
+                100.0,
+                confidence,
             ),
         )
+
+    # ============================================================
+    # QUALITY
+    # ============================================================
+
+    @staticmethod
+    def _calculate_quality(
+        current_confidence: float,
+        historical_winrate: float,
+        effective_winrate: float,
+        confirmations: int,
+        trades: int,
+    ) -> float:
+        """
+        Итоговое качество.
+
+        Чем сильнее текущая ситуация и чем лучше
+        историческая статистика, тем выше score.
+
+        Дополнительные сделки повышают качество,
+        но не могут искусственно превратить плохой
+        исторический результат в хороший.
+        """
+
+        current_component = max(
+            0.0,
+            min(
+                100.0,
+                float(
+                    current_confidence
+                    or 0.0
+                ),
+            ),
+        )
+
+        historical_component = max(
+            0.0,
+            min(
+                100.0,
+                float(
+                    historical_winrate
+                    or 0.0
+                ),
+            ),
+        )
+
+        effective_component = max(
+            0.0,
+            min(
+                100.0,
+                float(
+                    effective_winrate
+                    or 0.0
+                ),
+            ),
+        )
+
+        confirmation_component = (
+            min(
+                confirmations,
+                7,
+            )
+            / 7.0
+            * 100.0
+        )
+
+        # Небольшой бонус за размер выборки.
+        if trades >= 30:
+            sample_bonus = 5.0
+        elif trades >= 20:
+            sample_bonus = 3.0
+        elif trades >= 10:
+            sample_bonus = 1.0
+        else:
+            sample_bonus = 0.0
+
+        quality = (
+            current_component * 0.30
+            + historical_component * 0.25
+            + effective_component * 0.25
+            + confirmation_component * 0.20
+            + sample_bonus
+        )
+
+        return max(
+            0.0,
+            min(
+                100.0,
+                quality,
+            ),
+        )
+
+    # ============================================================
+    # REASONS
+    # ============================================================
+
+    @staticmethod
+    def _build_reasons(
+        reasons: list[str],
+        direction: str,
+        historical_winrate: float,
+        confirmations: int,
+        trades: int,
+    ) -> list[str]:
+        result = list(
+            reasons
+        )
+
+        direction_text = (
+            "ВВЕРХ"
+            if direction == "UP"
+            else "ВНИЗ"
+        )
+
+        result.insert(
+            0,
+            f"Направление: {direction_text}",
+        )
+
+        result.append(
+            f"Исторический WINRATE: "
+            f"{historical_winrate:.1f}%"
+        )
+
+        result.append(
+            f"Подтверждения: "
+            f"{confirmations}/7"
+        )
+
+        result.append(
+            f"Историческая выборка: "
+            f"{trades} сделок"
+        )
+
+        return result
+
+    # ============================================================
+    # INDICATORS
+    # ============================================================
+
+    @staticmethod
+    def _clean_indicators(
+        values: dict[str, Any],
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+
+        for key, value in values.items():
+
+            if value is None:
+                continue
+
+            if isinstance(
+                value,
+                bool,
+            ):
+                result[key] = value
+                continue
+
+            try:
+                if pd.isna(value):
+                    continue
+            except Exception:
+                pass
+
+            try:
+                result[key] = round(
+                    float(value),
+                    8,
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                try:
+                    result[key] = value.item()
+                except Exception:
+                    result[key] = str(
+                        value
+                    )
+
+        return result
+
+    # ============================================================
+    # HELPERS
+    # ============================================================
+
+    @staticmethod
+    def _safe_float(
+        value: Any,
+    ) -> float | None:
+        if value is None:
+            return None
+
+        try:
+            result = float(
+                value
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None
+
+        if pd.isna(result):
+            return None
+
+        return result
 
     @staticmethod
     def _market_name(
@@ -1018,18 +808,42 @@ class SignalEngine:
         ):
             return market
 
-        for attr in (
+        for attribute in (
             "name",
             "market",
             "market_type",
         ):
             value = getattr(
                 market,
-                attr,
+                attribute,
                 None,
             )
 
             if value:
-                return str(value)
+                return str(
+                    value
+                )
 
         return "regular"
+
+    @staticmethod
+    def _get_last_candle_time(
+        df: pd.DataFrame,
+    ) -> str | None:
+        if (
+            df is None
+            or df.empty
+            or "datetime" not in df.columns
+        ):
+            return None
+
+        try:
+            value = pd.to_datetime(
+                df.iloc[-1]["datetime"],
+                utc=True,
+            )
+
+            return value.isoformat()
+
+        except Exception:
+            return None
