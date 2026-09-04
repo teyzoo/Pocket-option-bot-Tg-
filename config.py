@@ -10,7 +10,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _get(name: str, default: str | None = None) -> str | None:
+# ---------------------------------------------------------------------------
+# Environment helpers
+# ---------------------------------------------------------------------------
+
+def _get(
+    name: str,
+    default: str | None = None,
+) -> str | None:
     value = os.getenv(name)
 
     if value is None:
@@ -35,7 +42,10 @@ def _get_required(name: str) -> str:
     return value
 
 
-def _get_int(name: str, default: int) -> int:
+def _get_int(
+    name: str,
+    default: int,
+) -> int:
     value = _get(name)
 
     if value is None:
@@ -49,7 +59,10 @@ def _get_int(name: str, default: int) -> int:
         ) from exc
 
 
-def _get_float(name: str, default: float) -> float:
+def _get_float(
+    name: str,
+    default: float,
+) -> float:
     value = _get(name)
 
     if value is None:
@@ -63,7 +76,10 @@ def _get_float(name: str, default: float) -> float:
         ) from exc
 
 
-def _get_bool(name: str, default: bool) -> bool:
+def _get_bool(
+    name: str,
+    default: bool,
+) -> bool:
     value = _get(name)
 
     if value is None:
@@ -78,7 +94,9 @@ def _get_bool(name: str, default: bool) -> bool:
     }
 
 
-def _get_int_list(name: str) -> tuple[int, ...]:
+def _get_int_list(
+    name: str,
+) -> tuple[int, ...]:
     value = _get(name, "")
 
     if not value:
@@ -108,7 +126,9 @@ def _get_int_list(name: str) -> tuple[int, ...]:
 
 BOT_TOKEN: Final[str] = _get_required("BOT_TOKEN")
 
-DATABASE_URL: Final[str] = _get_required("DATABASE_URL")
+DATABASE_URL: Final[str] = _get_required(
+    "DATABASE_URL"
+)
 
 TWELVE_DATA_API_KEY: Final[str] = _get_required(
     "TWELVE_DATA_API_KEY"
@@ -119,11 +139,15 @@ ADMIN_IDS: Final[tuple[int, ...]] = _get_int_list(
 )
 
 OWNER_IDS: Final[tuple[int, ...]] = (
-    _get_int_list("OWNER_IDS") or ADMIN_IDS
+    _get_int_list("OWNER_IDS")
+    or ADMIN_IDS
 )
 
 HOST: Final[str] = (
-    _get("HOST", "0.0.0.0")
+    _get(
+        "HOST",
+        "0.0.0.0",
+    )
     or "0.0.0.0"
 )
 
@@ -133,12 +157,18 @@ PORT: Final[int] = _get_int(
 )
 
 HEALTH_PATH: Final[str] = (
-    _get("HEALTH_PATH", "/health")
+    _get(
+        "HEALTH_PATH",
+        "/health",
+    )
     or "/health"
 )
 
 TIMEZONE: Final[str] = (
-    _get("TIMEZONE", "Europe/Moscow")
+    _get(
+        "TIMEZONE",
+        "Europe/Moscow",
+    )
     or "Europe/Moscow"
 )
 
@@ -235,10 +265,25 @@ TWELVE_DATA_BASE_URL: Final[str] = (
     or "https://api.twelvedata.com"
 )
 
+
+# Основной параметр таймаута.
+#
+# Некоторые модули проекта используют:
+#     TWELVE_DATA_TIMEOUT
+#
+# Другие могут использовать:
+#     TWELVE_DATA_TIMEOUT_SECONDS
+#
+# Оставляем оба имени совместимыми, чтобы не ломать существующий код.
 TWELVE_DATA_TIMEOUT_SECONDS: Final[float] = _get_float(
     "TWELVE_DATA_TIMEOUT_SECONDS",
     20.0,
 )
+
+TWELVE_DATA_TIMEOUT: Final[float] = (
+    TWELVE_DATA_TIMEOUT_SECONDS
+)
+
 
 TWELVE_DATA_MAX_CANDLES: Final[int] = max(
     100,
@@ -377,7 +422,6 @@ EMA_TREND: Final[int] = max(
     ),
 )
 
-
 RSI_PERIOD: Final[int] = max(
     2,
     _get_int(
@@ -385,7 +429,6 @@ RSI_PERIOD: Final[int] = max(
         14,
     ),
 )
-
 
 MACD_FAST: Final[int] = max(
     2,
@@ -411,7 +454,6 @@ MACD_SIGNAL: Final[int] = max(
     ),
 )
 
-
 BOLLINGER_PERIOD: Final[int] = max(
     2,
     _get_int(
@@ -428,7 +470,6 @@ BOLLINGER_STD: Final[float] = max(
     ),
 )
 
-
 STOCHASTIC_PERIOD: Final[int] = max(
     2,
     _get_int(
@@ -444,7 +485,6 @@ STOCHASTIC_SMOOTH: Final[int] = max(
         3,
     ),
 )
-
 
 ATR_PERIOD: Final[int] = max(
     2,
@@ -585,6 +625,7 @@ NORMAL_PAIRS: Final[tuple[str, ...]] = (
 
 # OTC intentionally remains empty.
 # No fake OTC prices or candles are generated.
+
 OTC_PAIRS: Final[tuple[str, ...]] = ()
 
 
@@ -593,18 +634,37 @@ OTC_PAIRS: Final[tuple[str, ...]] = ()
 # ---------------------------------------------------------------------------
 
 RESULT_PENDING: Final[str] = "pending"
+
 RESULT_WIN: Final[str] = "win"
+
 RESULT_LOSS: Final[str] = "loss"
+
 RESULT_DRAW: Final[str] = "draw"
+
 RESULT_CANCELLED: Final[str] = "cancelled"
 
 
 # Backward-compatible signal-result aliases.
-SIGNAL_RESULT_PENDING: Final[str] = RESULT_PENDING
-SIGNAL_RESULT_WIN: Final[str] = RESULT_WIN
-SIGNAL_RESULT_LOSS: Final[str] = RESULT_LOSS
-SIGNAL_RESULT_DRAW: Final[str] = RESULT_DRAW
-SIGNAL_RESULT_CANCELLED: Final[str] = RESULT_CANCELLED
+
+SIGNAL_RESULT_PENDING: Final[str] = (
+    RESULT_PENDING
+)
+
+SIGNAL_RESULT_WIN: Final[str] = (
+    RESULT_WIN
+)
+
+SIGNAL_RESULT_LOSS: Final[str] = (
+    RESULT_LOSS
+)
+
+SIGNAL_RESULT_DRAW: Final[str] = (
+    RESULT_DRAW
+)
+
+SIGNAL_RESULT_CANCELLED: Final[str] = (
+    RESULT_CANCELLED
+)
 
 
 # ---------------------------------------------------------------------------
@@ -612,16 +672,31 @@ SIGNAL_RESULT_CANCELLED: Final[str] = RESULT_CANCELLED
 # ---------------------------------------------------------------------------
 
 USER_PENDING: Final[str] = "pending"
+
 USER_APPROVED: Final[str] = "approved"
+
 USER_REJECTED: Final[str] = "rejected"
+
 USER_BLACKLISTED: Final[str] = "blacklisted"
 
 
 # Backward-compatible access aliases.
-ACCESS_PENDING: Final[str] = USER_PENDING
-ACCESS_APPROVED: Final[str] = USER_APPROVED
-ACCESS_REJECTED: Final[str] = USER_REJECTED
-ACCESS_BLACKLISTED: Final[str] = USER_BLACKLISTED
+
+ACCESS_PENDING: Final[str] = (
+    USER_PENDING
+)
+
+ACCESS_APPROVED: Final[str] = (
+    USER_APPROVED
+)
+
+ACCESS_REJECTED: Final[str] = (
+    USER_REJECTED
+)
+
+ACCESS_BLACKLISTED: Final[str] = (
+    USER_BLACKLISTED
+)
 
 
 # ---------------------------------------------------------------------------
@@ -629,6 +704,7 @@ ACCESS_BLACKLISTED: Final[str] = USER_BLACKLISTED
 # ---------------------------------------------------------------------------
 
 MARKET_REGULAR: Final[str] = "regular"
+
 MARKET_OTC: Final[str] = "otc"
 
 
@@ -637,7 +713,9 @@ MARKET_OTC: Final[str] = "otc"
 # ---------------------------------------------------------------------------
 
 SIGNAL_SOURCE_AUTO: Final[str] = "auto"
+
 SIGNAL_SOURCE_MANUAL: Final[str] = "manual"
+
 SIGNAL_SOURCE_ANALYSIS: Final[str] = "analysis"
 
 
@@ -646,6 +724,7 @@ SIGNAL_SOURCE_ANALYSIS: Final[str] = "analysis"
 # ---------------------------------------------------------------------------
 
 DIRECTION_UP: Final[str] = "UP"
+
 DIRECTION_DOWN: Final[str] = "DOWN"
 
 
@@ -661,6 +740,7 @@ class ConfigSnapshot:
     admin_ids: tuple[int, ...]
     owner_ids: tuple[int, ...]
     timezone: str
+
     min_signal_winrate: float
     min_signal_confidence: float
     min_signal_quality: float
@@ -689,32 +769,38 @@ def validate_config() -> None:
 
     if not ADMIN_IDS:
         raise RuntimeError(
-            "ADMIN_IDS is empty. Add at least one Telegram administrator ID."
+            "ADMIN_IDS is empty. "
+            "Add at least one Telegram administrator ID."
         )
 
     if not OWNER_IDS:
         raise RuntimeError(
-            "OWNER_IDS is empty. Add at least one Telegram owner ID."
+            "OWNER_IDS is empty. "
+            "Add at least one Telegram owner ID."
         )
 
     if MIN_EXPIRY_MINUTES > MAX_EXPIRY_MINUTES:
         raise RuntimeError(
-            "MIN_EXPIRY_MINUTES cannot exceed MAX_EXPIRY_MINUTES"
+            "MIN_EXPIRY_MINUTES cannot exceed "
+            "MAX_EXPIRY_MINUTES"
         )
 
     if DEFAULT_EXPIRY_MINUTES < MIN_EXPIRY_MINUTES:
         raise RuntimeError(
-            "DEFAULT_EXPIRY_MINUTES is below MIN_EXPIRY_MINUTES"
+            "DEFAULT_EXPIRY_MINUTES is below "
+            "MIN_EXPIRY_MINUTES"
         )
 
     if DEFAULT_EXPIRY_MINUTES > MAX_EXPIRY_MINUTES:
         raise RuntimeError(
-            "DEFAULT_EXPIRY_MINUTES exceeds MAX_EXPIRY_MINUTES"
+            "DEFAULT_EXPIRY_MINUTES exceeds "
+            "MAX_EXPIRY_MINUTES"
         )
 
     if TWELVE_DATA_MIN_CANDLES > TWELVE_DATA_MAX_CANDLES:
         raise RuntimeError(
-            "TWELVE_DATA_MIN_CANDLES cannot exceed TWELVE_DATA_MAX_CANDLES"
+            "TWELVE_DATA_MIN_CANDLES cannot exceed "
+            "TWELVE_DATA_MAX_CANDLES"
         )
 
     if MIN_CANDLES_REQUIRED < 50:
@@ -724,7 +810,13 @@ def validate_config() -> None:
 
     if MAX_CANDLES < MIN_CANDLES_REQUIRED:
         raise RuntimeError(
-            "MAX_CANDLES cannot be below MIN_CANDLES_REQUIRED"
+            "MAX_CANDLES cannot be below "
+            "MIN_CANDLES_REQUIRED"
+        )
+
+    if TWELVE_DATA_TIMEOUT <= 0:
+        raise RuntimeError(
+            "TWELVE_DATA_TIMEOUT must be greater than 0"
         )
 
 
