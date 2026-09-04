@@ -41,3 +41,5 @@ services:
 
       - key: AUTO_SIGNAL_INTERVAL_MINUTES
         value: 20
+runtime: python
+pythonVersion: 3.13.11
