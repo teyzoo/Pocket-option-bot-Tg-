@@ -36,7 +36,11 @@ from signal_scanner import SignalScanner
 from signal_service import get_user_signal_history
 from states import SignalStates
 from services import (
+    ensure_privileged_user,
     get_user_access_status,
+    get_user,
+    is_admin_user,
+    is_owner_user,
     request_access,
     set_auto_signals,
 )
@@ -50,20 +54,9 @@ logger = logging.getLogger(__name__)
 
 router = Router()
 
+
 # ---------------------------------------------------------------------------
-# Signal scanner
-# ---------------------------------------------------------------------------
-#
-# SignalScanner требует MarketClient и SignalEngine.
-# Раньше здесь было:
-#
-#     scanner = SignalScanner()
-#
-# что вызывало:
-#
-#     TypeError: SignalScanner.__init__() missing 2 required positional arguments
-#
-# Используем уже существующий singleton market_client.
+# SIGNAL SCANNER
 # ---------------------------------------------------------------------------
 
 scanner = SignalScanner(
@@ -73,16 +66,30 @@ scanner = SignalScanner(
 
 
 # ---------------------------------------------------------------------------
-# Access helpers
+# ACCESS HELPERS
 # ---------------------------------------------------------------------------
 
 def is_owner(telegram_id: int) -> bool:
-    return int(telegram_id) in OWNER_IDS
+    """
+    Проверка владельца.
+
+    Используем services.py как основной источник истины,
+    а config оставляем для совместимости старого кода.
+    """
+    telegram_id = int(telegram_id)
+
+    return (
+        is_owner_user(telegram_id)
+        or telegram_id in OWNER_IDS
+    )
 
 
 def is_admin(telegram_id: int) -> bool:
+    telegram_id = int(telegram_id)
+
     return (
-        int(telegram_id) in ADMIN_IDS
+        is_admin_user(telegram_id)
+        or telegram_id in ADMIN_IDS
         or is_owner(telegram_id)
     )
 
@@ -90,22 +97,34 @@ def is_admin(telegram_id: int) -> bool:
 async def get_current_user(
     telegram_id: int,
 ) -> User | None:
-    async with get_session() as session:
-        from sqlalchemy import select
+    return await get_user(
+        int(telegram_id)
+    )
 
-        result = await session.execute(
-            select(User).where(
-                User.telegram_id == int(telegram_id)
-            )
-        )
 
-        return result.scalar_one_or_none()
-
+# ---------------------------------------------------------------------------
+# APPROVED CHECK
+# ---------------------------------------------------------------------------
 
 async def require_approved(
     message: Message,
 ) -> bool:
-    telegram_id = int(message.from_user.id)
+    telegram_id = int(
+        message.from_user.id
+    )
+
+    # -----------------------------------------------------------------------
+    # ADMIN / OWNER:
+    # доступ независимо от старого статуса в БД.
+    # -----------------------------------------------------------------------
+
+    if is_admin(telegram_id):
+        await ensure_privileged_user(
+            telegram_id=telegram_id,
+            username=message.from_user.username,
+            first_name=message.from_user.first_name,
+        )
+        return True
 
     status = await get_user_access_status(
         telegram_id
@@ -143,8 +162,25 @@ async def require_approved(
 async def _callback_approved(
     callback: CallbackQuery,
 ) -> bool:
+    telegram_id = int(
+        callback.from_user.id
+    )
+
+    # -----------------------------------------------------------------------
+    # ADMIN / OWNER:
+    # callback тоже не должен блокироваться pending-статусом.
+    # -----------------------------------------------------------------------
+
+    if is_admin(telegram_id):
+        await ensure_privileged_user(
+            telegram_id=telegram_id,
+            username=callback.from_user.username,
+            first_name=callback.from_user.first_name,
+        )
+        return True
+
     status = await get_user_access_status(
-        int(callback.from_user.id)
+        telegram_id
     )
 
     if status == "approved":
@@ -167,7 +203,7 @@ async def _callback_approved(
 
 
 # ---------------------------------------------------------------------------
-# /start
+# /START
 # ---------------------------------------------------------------------------
 
 @router.message(CommandStart())
@@ -180,6 +216,37 @@ async def start_handler(
     telegram_id = int(
         message.from_user.id
     )
+
+    # =======================================================================
+    # КРИТИЧЕСКИЙ ФИКС
+    #
+    # Проверяем owner/admin ПЕРЕД статусом БД.
+    #
+    # Если у владельца раньше был pending — он автоматически станет
+    # approved прямо сейчас.
+    # =======================================================================
+
+    if is_admin(telegram_id):
+        await ensure_privileged_user(
+            telegram_id=telegram_id,
+            username=message.from_user.username,
+            first_name=message.from_user.first_name,
+        )
+
+        await message.answer(
+            render_message(
+                "start_approved",
+                name=(
+                    message.from_user.first_name
+                    or "пользователь"
+                ),
+            ),
+            reply_markup=main_menu_keyboard(
+                is_owner=is_owner(telegram_id)
+            ),
+        )
+
+        return
 
     status = await get_user_access_status(
         telegram_id
@@ -222,6 +289,21 @@ async def start_handler(
         first_name=message.from_user.first_name,
     )
 
+    if request.status == "approved":
+        await message.answer(
+            render_message(
+                "start_approved",
+                name=(
+                    message.from_user.first_name
+                    or "пользователь"
+                ),
+            ),
+            reply_markup=main_menu_keyboard(
+                is_owner=is_owner(telegram_id)
+            ),
+        )
+        return
+
     if request.status == "pending":
         await message.answer(
             render_message(
@@ -246,7 +328,7 @@ async def start_handler(
 
 
 # ---------------------------------------------------------------------------
-# Find signal
+# FIND SIGNAL
 # ---------------------------------------------------------------------------
 
 @router.message(
@@ -300,7 +382,7 @@ async def menu_signal_callback(
 
 
 # ---------------------------------------------------------------------------
-# Market selection
+# MARKET
 # ---------------------------------------------------------------------------
 
 @router.callback_query(
@@ -346,7 +428,7 @@ async def choose_market_callback(
 
 
 # ---------------------------------------------------------------------------
-# Pair selection
+# PAIR
 # ---------------------------------------------------------------------------
 
 @router.callback_query(
@@ -395,7 +477,7 @@ async def choose_pair_callback(
 
 
 # ---------------------------------------------------------------------------
-# Expiry selection
+# EXPIRY
 # ---------------------------------------------------------------------------
 
 @router.callback_query(
@@ -428,10 +510,6 @@ async def choose_expiry_callback(
             )
             return
 
-    # ---------------------------------------------------------------
-    # Защита диапазона срока.
-    # ---------------------------------------------------------------
-
     if isinstance(expiry, int):
         if expiry < 1 or expiry > 20:
             await callback.message.answer(
@@ -444,6 +522,7 @@ async def choose_expiry_callback(
     data = await state.get_data()
 
     pair = data.get("pair")
+
     market = data.get(
         "market",
         "regular",
@@ -474,9 +553,9 @@ async def choose_expiry_callback(
     )
 
     try:
-        # -----------------------------------------------------------
-        # Обычный срок.
-        # -----------------------------------------------------------
+        # -------------------------------------------------------------------
+        # Обычный срок
+        # -------------------------------------------------------------------
 
         if isinstance(expiry, int):
             candidate = await scanner.scan_pair(
@@ -486,14 +565,9 @@ async def choose_expiry_callback(
                 source="manual",
             )
 
-        # -----------------------------------------------------------
-        # "Любое время":
-        #
-        # перебираем все сроки 1..20 минут и выбираем лучший
-        # найденный сигнал.
-        #
-        # Важно: здесь НЕ передаётся строка "any" в SignalEngine.
-        # -----------------------------------------------------------
+        # -------------------------------------------------------------------
+        # Любое время
+        # -------------------------------------------------------------------
 
         else:
             expiry_candidates = range(
@@ -578,20 +652,14 @@ async def choose_expiry_callback(
             )
             return
 
-        # -----------------------------------------------------------
-        # Scanner сейчас возвращает только SignalCandidate.
-        # График не обязателен для signal_service.
-        # -----------------------------------------------------------
-
         chart_path = None
 
         from signal_service import save_signal
+        from signal_service import send_manual_signal
 
         signal = await save_signal(
             candidate
         )
-
-        from signal_service import send_manual_signal
 
         await send_manual_signal(
             bot=callback.bot,
@@ -619,7 +687,7 @@ async def choose_expiry_callback(
 
 
 # ---------------------------------------------------------------------------
-# Market analysis
+# MARKET ANALYSIS
 # ---------------------------------------------------------------------------
 
 @router.message(
@@ -651,7 +719,7 @@ async def analysis_market_handler(
 
 
 # ---------------------------------------------------------------------------
-# History
+# HISTORY
 # ---------------------------------------------------------------------------
 
 @router.message(
@@ -738,7 +806,7 @@ async def history_handler(
 
 
 # ---------------------------------------------------------------------------
-# Statistics
+# STATISTICS
 # ---------------------------------------------------------------------------
 
 @router.message(
@@ -777,7 +845,7 @@ async def stats_handler(
 
 
 # ---------------------------------------------------------------------------
-# Settings
+# SETTINGS
 # ---------------------------------------------------------------------------
 
 @router.message(
@@ -858,7 +926,7 @@ async def settings_auto_callback(
 
 
 # ---------------------------------------------------------------------------
-# Main menu
+# MAIN MENU
 # ---------------------------------------------------------------------------
 
 @router.callback_query(
@@ -875,6 +943,25 @@ async def main_menu_callback(
     telegram_id = int(
         callback.from_user.id
     )
+
+    if is_admin(telegram_id):
+        await ensure_privileged_user(
+            telegram_id=telegram_id,
+            username=callback.from_user.username,
+            first_name=callback.from_user.first_name,
+        )
+
+        await callback.message.answer(
+            render_message(
+                "main_menu"
+            ),
+            reply_markup=main_menu_keyboard(
+                is_owner=is_owner(
+                    telegram_id
+                )
+            ),
+        )
+        return
 
     status = await get_user_access_status(
         telegram_id
@@ -901,7 +988,7 @@ async def main_menu_callback(
 
 
 # ---------------------------------------------------------------------------
-# Pair menu
+# PAIR MENU
 # ---------------------------------------------------------------------------
 
 @router.callback_query(
@@ -929,7 +1016,7 @@ async def menu_pairs_callback(
 
 
 # ---------------------------------------------------------------------------
-# Pair decoder
+# PAIR DECODER
 # ---------------------------------------------------------------------------
 
 def _decode_pair(
@@ -959,7 +1046,7 @@ def _decode_pair(
 
 
 # ---------------------------------------------------------------------------
-# Fallback
+# FALLBACK
 # ---------------------------------------------------------------------------
 
 @router.message()
