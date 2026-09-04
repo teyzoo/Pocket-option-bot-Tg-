@@ -4,48 +4,90 @@ import os
 from typing import Final
 
 
-def _get_str(name: str, default: str = "") -> str:
+# ============================================================
+# HELPERS
+# ============================================================
+
+def _get_str(
+    name: str,
+    default: str = "",
+) -> str:
     value = os.getenv(name)
-    return default if value is None else value.strip()
+
+    if value is None:
+        return default
+
+    return value.strip()
 
 
-def _get_int(name: str, default: int) -> int:
+def _get_int(
+    name: str,
+    default: int,
+) -> int:
     value = os.getenv(name)
+
     if value is None or not value.strip():
         return default
+
     try:
         return int(value.strip())
     except (TypeError, ValueError):
         return default
 
 
-def _get_float(name: str, default: float) -> float:
+def _get_float(
+    name: str,
+    default: float,
+) -> float:
     value = os.getenv(name)
+
     if value is None or not value.strip():
         return default
+
     try:
         return float(value.strip())
     except (TypeError, ValueError):
         return default
 
 
-def _get_bool(name: str, default: bool) -> bool:
+def _get_bool(
+    name: str,
+    default: bool,
+) -> bool:
     value = os.getenv(name)
+
     if value is None:
         return default
 
     value = value.strip().lower()
 
-    if value in {"1", "true", "yes", "y", "on", "да"}:
+    if value in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+        "да",
+    }:
         return True
 
-    if value in {"0", "false", "no", "n", "off", "нет"}:
+    if value in {
+        "0",
+        "false",
+        "no",
+        "n",
+        "off",
+        "нет",
+    }:
         return False
 
     return default
 
 
-def _get_list(name: str, default: list[str]) -> list[str]:
+def _get_list(
+    name: str,
+    default: list[str],
+) -> list[str]:
     value = os.getenv(name)
 
     if value is None or not value.strip():
@@ -82,7 +124,9 @@ DEBUG: Final[bool] = _get_bool(
 # TELEGRAM
 # ============================================================
 
-BOT_TOKEN: Final[str] = _get_str("BOT_TOKEN")
+BOT_TOKEN: Final[str] = _get_str(
+    "BOT_TOKEN"
+)
 
 if not BOT_TOKEN:
     raise RuntimeError(
@@ -91,11 +135,14 @@ if not BOT_TOKEN:
 
 
 # ============================================================
-# ADMINS
+# ADMINS / OWNERS
 # ============================================================
 
 def _parse_admin_ids() -> list[int]:
-    raw = os.getenv("ADMIN_IDS", "")
+    raw = os.getenv(
+        "ADMIN_IDS",
+        "",
+    )
 
     result: list[int] = []
 
@@ -115,44 +162,88 @@ def _parse_admin_ids() -> list[int]:
 
 ADMIN_IDS: Final[list[int]] = _parse_admin_ids()
 
-OWNER_IDS: Final[list[int]] = list(ADMIN_IDS)
+# Совместимость со старым кодом.
+OWNER_IDS: Final[list[int]] = list(
+    ADMIN_IDS
+)
+
+
+# ============================================================
+# ACCESS STATUSES
+# ============================================================
+
+ACCESS_APPROVED: Final[str] = "approved"
+
+ACCESS_PENDING: Final[str] = "pending"
+
+ACCESS_REJECTED: Final[str] = "rejected"
+
+ACCESS_BLACKLISTED: Final[str] = "blacklisted"
 
 
 # ============================================================
 # DATABASE
 # ============================================================
 
-DATABASE_URL: Final[str] = _get_str("DATABASE_URL")
+DATABASE_URL: Final[str] = _get_str(
+    "DATABASE_URL"
+)
 
 if not DATABASE_URL:
     raise RuntimeError(
         "Environment variable DATABASE_URL is required"
     )
 
+
 DB_POOL_SIZE: Final[int] = max(
     1,
-    _get_int("DB_POOL_SIZE", 5),
+    _get_int(
+        "DB_POOL_SIZE",
+        5,
+    ),
 )
 
 DB_MAX_OVERFLOW: Final[int] = max(
     0,
-    _get_int("DB_MAX_OVERFLOW", 10),
+    _get_int(
+        "DB_MAX_OVERFLOW",
+        10,
+    ),
 )
 
 DB_POOL_TIMEOUT: Final[int] = max(
     1,
-    _get_int("DB_POOL_TIMEOUT", 30),
+    _get_int(
+        "DB_POOL_TIMEOUT",
+        30,
+    ),
 )
 
 DB_POOL_RECYCLE: Final[int] = max(
     60,
-    _get_int("DB_POOL_RECYCLE", 1800),
+    _get_int(
+        "DB_POOL_RECYCLE",
+        1800,
+    ),
 )
 
-DATABASE_POOL_SIZE: Final[int] = DB_POOL_SIZE
-DATABASE_MAX_OVERFLOW: Final[int] = DB_MAX_OVERFLOW
-DATABASE_POOL_TIMEOUT: Final[int] = DB_POOL_TIMEOUT
-DATABASE_POOL_RECYCLE: Final[int] = DB_POOL_RECYCLE
+
+# Старые названия для совместимости.
+DATABASE_POOL_SIZE: Final[int] = (
+    DB_POOL_SIZE
+)
+
+DATABASE_MAX_OVERFLOW: Final[int] = (
+    DB_MAX_OVERFLOW
+)
+
+DATABASE_POOL_TIMEOUT: Final[int] = (
+    DB_POOL_TIMEOUT
+)
+
+DATABASE_POOL_RECYCLE: Final[int] = (
+    DB_POOL_RECYCLE
+)
 
 
 # ============================================================
@@ -176,6 +267,7 @@ TWELVE_DATA_TIMEOUT_SECONDS: Final[float] = max(
     ),
 )
 
+# Совместимость.
 TWELVE_DATA_TIMEOUT: Final[float] = (
     TWELVE_DATA_TIMEOUT_SECONDS
 )
@@ -321,91 +413,154 @@ PRICE_ACTION_SCORE: Final[float] = _get_float(
 
 
 # ============================================================
-# INDICATORS
+# INDICATOR PERIODS
 # ============================================================
 
 EMA_FAST_PERIOD: Final[int] = max(
     1,
-    _get_int("EMA_FAST_PERIOD", 9),
+    _get_int(
+        "EMA_FAST_PERIOD",
+        9,
+    ),
 )
 
 EMA_SLOW_PERIOD: Final[int] = max(
     EMA_FAST_PERIOD + 1,
-    _get_int("EMA_SLOW_PERIOD", 21),
+    _get_int(
+        "EMA_SLOW_PERIOD",
+        21,
+    ),
 )
 
 EMA_TREND_PERIOD: Final[int] = max(
     EMA_SLOW_PERIOD + 1,
-    _get_int("EMA_TREND_PERIOD", 50),
+    _get_int(
+        "EMA_TREND_PERIOD",
+        50,
+    ),
 )
+
 
 RSI_PERIOD: Final[int] = max(
     2,
-    _get_int("RSI_PERIOD", 14),
+    _get_int(
+        "RSI_PERIOD",
+        14,
+    ),
 )
+
 
 MACD_FAST_PERIOD: Final[int] = max(
     1,
-    _get_int("MACD_FAST_PERIOD", 12),
+    _get_int(
+        "MACD_FAST_PERIOD",
+        12,
+    ),
 )
 
 MACD_SLOW_PERIOD: Final[int] = max(
     MACD_FAST_PERIOD + 1,
-    _get_int("MACD_SLOW_PERIOD", 26),
+    _get_int(
+        "MACD_SLOW_PERIOD",
+        26,
+    ),
 )
 
 MACD_SIGNAL_PERIOD: Final[int] = max(
     1,
-    _get_int("MACD_SIGNAL_PERIOD", 9),
+    _get_int(
+        "MACD_SIGNAL_PERIOD",
+        9,
+    ),
 )
+
 
 BB_PERIOD: Final[int] = max(
     2,
-    _get_int("BB_PERIOD", 20),
+    _get_int(
+        "BB_PERIOD",
+        20,
+    ),
 )
 
 BB_STDDEV: Final[float] = max(
     0.1,
-    _get_float("BB_STDDEV", 2.0),
+    _get_float(
+        "BB_STDDEV",
+        2.0,
+    ),
 )
+
 
 STOCHASTIC_PERIOD: Final[int] = max(
     2,
-    _get_int("STOCHASTIC_PERIOD", 14),
+    _get_int(
+        "STOCHASTIC_PERIOD",
+        14,
+    ),
 )
 
 STOCHASTIC_SMOOTHING: Final[int] = max(
     1,
-    _get_int("STOCHASTIC_SMOOTHING", 3),
+    _get_int(
+        "STOCHASTIC_SMOOTHING",
+        3,
+    ),
 )
+
 
 ATR_PERIOD: Final[int] = max(
     2,
-    _get_int("ATR_PERIOD", 14),
+    _get_int(
+        "ATR_PERIOD",
+        14,
+    ),
 )
 
 
 # ============================================================
-# COMPATIBILITY ALIASES
+# INDICATOR COMPATIBILITY ALIASES
 # ============================================================
 
 EMA_FAST: Final[int] = EMA_FAST_PERIOD
+
 EMA_SLOW: Final[int] = EMA_SLOW_PERIOD
+
 EMA_TREND: Final[int] = EMA_TREND_PERIOD
+
 
 RSI_LENGTH: Final[int] = RSI_PERIOD
 
+
 MACD_FAST: Final[int] = MACD_FAST_PERIOD
+
 MACD_SLOW: Final[int] = MACD_SLOW_PERIOD
+
 MACD_SIGNAL: Final[int] = MACD_SIGNAL_PERIOD
 
-BOLLINGER_PERIOD: Final[int] = BB_PERIOD
-BOLLINGER_STDDEV: Final[float] = BB_STDDEV
-BOLLINGER_STD: Final[float] = BB_STDDEV
 
-STOCHASTIC_K_PERIOD: Final[int] = STOCHASTIC_PERIOD
-STOCHASTIC_D_PERIOD: Final[int] = STOCHASTIC_SMOOTHING
-STOCHASTIC_SMOOTH: Final[int] = STOCHASTIC_SMOOTHING
+BOLLINGER_PERIOD: Final[int] = BB_PERIOD
+
+BOLLINGER_STDDEV: Final[float] = (
+    BB_STDDEV
+)
+
+BOLLINGER_STD: Final[float] = (
+    BB_STDDEV
+)
+
+
+STOCHASTIC_K_PERIOD: Final[int] = (
+    STOCHASTIC_PERIOD
+)
+
+STOCHASTIC_D_PERIOD: Final[int] = (
+    STOCHASTIC_SMOOTHING
+)
+
+STOCHASTIC_SMOOTH: Final[int] = (
+    STOCHASTIC_SMOOTHING
+)
 
 
 # ============================================================
@@ -458,12 +613,15 @@ SIGNAL_DEDUPLICATION_MINUTES: Final[int] = max(
 
 
 # ============================================================
-# EXPIRY
+# EXPIRY / TIME
 # ============================================================
 
 MIN_EXPIRY_MINUTES: Final[int] = max(
     1,
-    _get_int("MIN_EXPIRY_MINUTES", 1),
+    _get_int(
+        "MIN_EXPIRY_MINUTES",
+        1,
+    ),
 )
 
 MAX_EXPIRY_MINUTES: Final[int] = max(
@@ -475,6 +633,15 @@ MAX_EXPIRY_MINUTES: Final[int] = max(
             20,
         ),
     ),
+)
+
+
+# Все разрешённые тайминги:
+EXPIRY_MINUTES: Final[list[int]] = list(
+    range(
+        MIN_EXPIRY_MINUTES,
+        MAX_EXPIRY_MINUTES + 1,
+    )
 )
 
 
@@ -490,6 +657,7 @@ RESULT_CHECK_INTERVAL_SECONDS: Final[int] = max(
     ),
 )
 
+# Совместимость со старым названием.
 RESULT_CHECKER_INTERVAL_SECONDS: Final[int] = (
     RESULT_CHECK_INTERVAL_SECONDS
 )
@@ -508,16 +676,35 @@ RESULT_PRICE_TOLERANCE_SECONDS: Final[int] = max(
 # ============================================================
 
 RESULT_PENDING: Final[str] = "PENDING"
+
 RESULT_WIN: Final[str] = "WIN"
+
 RESULT_LOSS: Final[str] = "LOSS"
+
 RESULT_DRAW: Final[str] = "DRAW"
+
 RESULT_CANCELLED: Final[str] = "CANCELLED"
 
-SIGNAL_RESULT_PENDING: Final[str] = RESULT_PENDING
-SIGNAL_RESULT_WIN: Final[str] = RESULT_WIN
-SIGNAL_RESULT_LOSS: Final[str] = RESULT_LOSS
-SIGNAL_RESULT_DRAW: Final[str] = RESULT_DRAW
-SIGNAL_RESULT_CANCELLED: Final[str] = RESULT_CANCELLED
+
+SIGNAL_RESULT_PENDING: Final[str] = (
+    RESULT_PENDING
+)
+
+SIGNAL_RESULT_WIN: Final[str] = (
+    RESULT_WIN
+)
+
+SIGNAL_RESULT_LOSS: Final[str] = (
+    RESULT_LOSS
+)
+
+SIGNAL_RESULT_DRAW: Final[str] = (
+    RESULT_DRAW
+)
+
+SIGNAL_RESULT_CANCELLED: Final[str] = (
+    RESULT_CANCELLED
+)
 
 
 # ============================================================
@@ -525,6 +712,7 @@ SIGNAL_RESULT_CANCELLED: Final[str] = RESULT_CANCELLED
 # ============================================================
 
 MARKET_REGULAR: Final[str] = "regular"
+
 MARKET_OTC: Final[str] = "otc"
 
 DEFAULT_MARKET: Final[str] = _get_str(
@@ -550,6 +738,7 @@ DEFAULT_PAIRS: Final[list[str]] = [
     "GBP/JPY",
 ]
 
+
 DEFAULT_OTC_PAIRS: Final[list[str]] = [
     "EUR/USD",
     "GBP/USD",
@@ -563,19 +752,28 @@ DEFAULT_OTC_PAIRS: Final[list[str]] = [
     "GBP/JPY",
 ]
 
+
 PAIRS: Final[list[str]] = _get_list(
     "PAIRS",
     DEFAULT_PAIRS,
 )
 
-NORMAL_PAIRS: Final[list[str]] = list(PAIRS)
+
+# Главный список обычных пар.
+NORMAL_PAIRS: Final[list[str]] = list(
+    PAIRS
+)
+
 
 OTC_PAIRS: Final[list[str]] = _get_list(
     "OTC_PAIRS",
     DEFAULT_OTC_PAIRS,
 )
 
+
+# Совместимость.
 DEFAULT_PAIRS = NORMAL_PAIRS
+
 
 MAX_PAIRS_PER_SCAN: Final[int] = max(
     1,
@@ -587,7 +785,7 @@ MAX_PAIRS_PER_SCAN: Final[int] = max(
 
 
 # ============================================================
-# PROBABILITY
+# PROBABILITY / BACKTEST
 # ============================================================
 
 PROBABILITY_MINIMUM_TRADES: Final[int] = max(
@@ -609,6 +807,7 @@ PROBABILITY_MINIMUM_WINRATE: Final[float] = max(
     ),
 )
 
+
 MIN_PROBABILITY: Final[float] = (
     PROBABILITY_MINIMUM_WINRATE
 )
@@ -623,7 +822,49 @@ MINIMUM_TRADES: Final[int] = (
 
 
 # ============================================================
-# STORAGE
+# BACKTEST
+# ============================================================
+
+BACKTEST_LOOKBACK_CANDLES: Final[int] = max(
+    50,
+    _get_int(
+        "BACKTEST_LOOKBACK_CANDLES",
+        250,
+    ),
+)
+
+BACKTEST_MIN_TRADES: Final[int] = max(
+    1,
+    _get_int(
+        "BACKTEST_MIN_TRADES",
+        PROBABILITY_MINIMUM_TRADES,
+    ),
+)
+
+
+# ============================================================
+# SIGNAL ENGINE
+# ============================================================
+
+SIGNAL_ENGINE_LOOKBACK: Final[int] = max(
+    MIN_CANDLES_REQUIRED,
+    _get_int(
+        "SIGNAL_ENGINE_LOOKBACK",
+        MAX_CANDLES,
+    ),
+)
+
+SIGNAL_ENGINE_MAX_REASONS: Final[int] = max(
+    1,
+    _get_int(
+        "SIGNAL_ENGINE_MAX_REASONS",
+        8,
+    ),
+)
+
+
+# ============================================================
+# STORAGE / HISTORY
 # ============================================================
 
 SIGNAL_HISTORY_LIMIT: Final[int] = max(
@@ -667,49 +908,105 @@ TIMEZONE: Final[str] = _get_str(
     "Europe/Moscow",
 )
 
-
-# ============================================================
-# ACCESS / FEATURES
-# ============================================================
-
-ACCESS_APPROVED: Final[str] = "approved"
-
-FEATURE_AUTO_SIGNALS: Final[bool] = _get_bool(
-    "FEATURE_AUTO_SIGNALS",
-    True,
-)
-
-FEATURE_MANUAL_SIGNALS: Final[bool] = _get_bool(
-    "FEATURE_MANUAL_SIGNALS",
-    True,
-)
-
-FEATURE_OTC: Final[bool] = _get_bool(
-    "FEATURE_OTC",
-    True,
+# Старое название, которое может использоваться
+# в существующем коде.
+MOSCOW_TIMEZONE: Final[str] = (
+    TIMEZONE
 )
 
 
 # ============================================================
-# STARTUP / LOGGING
+# FEATURES
+# ============================================================
+
+ENABLE_MANUAL_SIGNALS: Final[bool] = _get_bool(
+    "ENABLE_MANUAL_SIGNALS",
+    True,
+)
+
+ENABLE_AUTO_SIGNALS: Final[bool] = _get_bool(
+    "ENABLE_AUTO_SIGNALS",
+    True,
+)
+
+ENABLE_RESULT_CHECKER: Final[bool] = _get_bool(
+    "ENABLE_RESULT_CHECKER",
+    True,
+)
+
+ENABLE_OTC: Final[bool] = _get_bool(
+    "ENABLE_OTC",
+    False,
+)
+
+
+# ============================================================
+# LOGGING
 # ============================================================
 
 LOG_LEVEL: Final[str] = _get_str(
     "LOG_LEVEL",
     "INFO",
-)
+).upper()
 
-STARTUP_TIMEOUT_SECONDS: Final[int] = max(
-    5,
-    _get_int(
-        "STARTUP_TIMEOUT_SECONDS",
-        30,
+
+# ============================================================
+# HTTP
+# ============================================================
+
+HTTP_TIMEOUT_SECONDS: Final[float] = max(
+    1.0,
+    _get_float(
+        "HTTP_TIMEOUT_SECONDS",
+        20.0,
     ),
 )
 
 
-__all__ = [
-    name
-    for name in globals()
-    if name.isupper()
-]
+# ============================================================
+# SIGNAL DEDUPLICATION
+# ============================================================
+
+SIGNAL_DEDUPLICATION_ENABLED: Final[bool] = _get_bool(
+    "SIGNAL_DEDUPLICATION_ENABLED",
+    True,
+)
+
+
+# ============================================================
+# SAFETY / QUALITY
+# ============================================================
+
+REQUIRE_PROBABILITY: Final[bool] = _get_bool(
+    "REQUIRE_PROBABILITY",
+    True,
+)
+
+REQUIRE_MINIMUM_CONFIRMATIONS: Final[bool] = _get_bool(
+    "REQUIRE_MINIMUM_CONFIRMATIONS",
+    True,
+)
+
+
+# ============================================================
+# COMPATIBILITY
+# ============================================================
+
+MIN_SIGNAL_SCORE: Final[float] = max(
+    MIN_SIGNAL_QUALITY,
+    MIN_SIGNAL_CONFIDENCE,
+    MIN_SIGNAL_WINRATE,
+)
+
+
+MINIMUM_SIGNAL_QUALITY: Final[float] = (
+    MIN_SIGNAL_QUALITY
+)
+
+MINIMUM_SIGNAL_CONFIDENCE: Final[float] = (
+    MIN_SIGNAL_CONFIDENCE
+)
+
+MINIMUM_SIGNAL_WINRATE: Final[float] = (
+    MIN_SIGNAL_WINRATE
+)
