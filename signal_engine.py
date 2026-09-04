@@ -11,6 +11,7 @@ from config import (
     MAX_EXPIRY_MINUTES,
     MIN_CANDLES,
     MIN_SIGNAL_CONFIDENCE,
+    MIN_SIGNAL_CONFIRMATIONS,
     MIN_SIGNAL_QUALITY,
     MIN_SIGNAL_WINRATE,
 )
@@ -19,25 +20,26 @@ from models import SignalCandidate
 from probability import ProbabilityCalibrator
 
 
-logger = logging.getLogger("signal_engine")
+logger = logging.getLogger(
+    "signal_engine"
+)
 
 
 class SignalEngine:
     """
     Главный движок сигналов.
 
-    Логика:
-    1. Проверяем свежие свечи.
-    2. Рассчитываем индикаторы.
-    3. Определяем направление по текущей свече.
-    4. Проверяем количество подтверждений.
-    5. Проверяем исторический backtest именно для выбранного
-       направления и конкретной экспирации.
-    6. Требуем минимум 10 результативных исторических сделок.
-    7. Требуем исторический WINRATE >= 75%.
-    8. Возвращаем лучший подтверждённый сигнал.
+    Для сигнала необходимо:
 
-    Никаких искусственных сигналов ради заполнения ленты.
+    - достаточно свечей;
+    - направление UP/DOWN;
+    - минимум подтверждений;
+    - текущая confidence >= 75%;
+    - минимум 10 исторических результативных сделок;
+    - исторический WINRATE >= 75%.
+
+    Calibrator используется как дополнительная
+    статистика и не является вторым жёстким фильтром.
     """
 
     def __init__(
@@ -58,14 +60,22 @@ class SignalEngine:
     ) -> Optional[int]:
 
         try:
-            expiry = int(expiry_minutes)
-        except (TypeError, ValueError):
+            expiry = int(
+                expiry_minutes
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
             return None
 
         if expiry < 1:
             return None
 
-        if expiry > MAX_EXPIRY_MINUTES:
+        if (
+            expiry
+            > MAX_EXPIRY_MINUTES
+        ):
             return None
 
         return expiry
@@ -90,29 +100,38 @@ class SignalEngine:
         if not required_price_columns.issubset(
             set(data.columns)
         ):
+
             logger.warning(
                 "SignalEngine: missing OHLC columns"
             )
+
             return None
 
         if "datetime" in data.columns:
-            data["datetime"] = pd.to_datetime(
-                data["datetime"],
-                utc=True,
-                errors="coerce",
+
+            data["datetime"] = (
+                pd.to_datetime(
+                    data["datetime"],
+                    utc=True,
+                    errors="coerce",
+                )
             )
 
-        for column in [
+        for column in (
             "open",
             "high",
             "low",
             "close",
             "volume",
-        ]:
+        ):
+
             if column in data.columns:
-                data[column] = pd.to_numeric(
-                    data[column],
-                    errors="coerce",
+
+                data[column] = (
+                    pd.to_numeric(
+                        data[column],
+                        errors="coerce",
+                    )
                 )
 
         data = data.dropna(
@@ -128,26 +147,33 @@ class SignalEngine:
             return None
 
         if "datetime" in data.columns:
+
             data = (
                 data
-                .sort_values("datetime")
+                .sort_values(
+                    "datetime"
+                )
                 .drop_duplicates(
                     subset=["datetime"],
                     keep="last",
                 )
-                .reset_index(drop=True)
+                .reset_index(
+                    drop=True
+                )
             )
+
         else:
+
             data = (
                 data
-                .reset_index(drop=True)
+                .reset_index(
+                    drop=True
+                )
             )
 
         if len(data) < MIN_CANDLES:
             return None
 
-        # Не рассчитываем индикаторы второй раз,
-        # если scanner/market уже передал подготовленный DF.
         indicator_columns = {
             "ema_fast",
             "ema_slow",
@@ -164,7 +190,10 @@ class SignalEngine:
         if not indicator_columns.issubset(
             set(data.columns)
         ):
-            data = calculate_indicators(data)
+
+            data = calculate_indicators(
+                data
+            )
 
         if len(data) < MIN_CANDLES:
             return None
@@ -177,12 +206,6 @@ class SignalEngine:
         winrate: float,
         confirmations: int,
     ) -> float:
-        """
-        Итоговый Quality Score.
-
-        Это не заменяет исторический WINRATE.
-        Исторический WINRATE остаётся обязательным фильтром.
-        """
 
         confidence_component = min(
             100.0,
@@ -204,9 +227,11 @@ class SignalEngine:
             100.0,
             max(
                 0.0,
-                float(confirmations)
-                / 7.0
-                * 100.0,
+                (
+                    float(confirmations)
+                    / 7.0
+                    * 100.0
+                ),
             ),
         )
 
@@ -217,7 +242,10 @@ class SignalEngine:
         )
 
         return round(
-            min(100.0, quality),
+            min(
+                100.0,
+                quality,
+            ),
             2,
         )
 
@@ -225,12 +253,23 @@ class SignalEngine:
     def _candidate_sort_key(
         candidate: SignalCandidate,
     ):
+
         return (
-            float(candidate.winrate),
-            float(candidate.quality),
-            float(candidate.confidence),
-            int(candidate.confirmations),
-            int(candidate.winrate_trades),
+            float(
+                candidate.winrate
+            ),
+            float(
+                candidate.quality
+            ),
+            float(
+                candidate.confidence
+            ),
+            int(
+                candidate.confirmations
+            ),
+            int(
+                candidate.winrate_trades
+            ),
         )
 
     def analyze(
@@ -240,31 +279,47 @@ class SignalEngine:
         df: pd.DataFrame,
         expiry_minutes: int,
         source: str = "manual",
-    ) -> Optional[SignalCandidate]:
+    ) -> Optional[
+        SignalCandidate
+    ]:
 
-        expiry = self._normalize_expiry(
-            expiry_minutes
+        expiry = (
+            self._normalize_expiry(
+                expiry_minutes
+            )
         )
 
         if expiry is None:
+
             logger.warning(
                 "%s | invalid expiry=%s",
                 pair,
                 expiry_minutes,
             )
+
             return None
 
-        prepared = self._prepare_dataframe(df)
+        prepared = (
+            self._prepare_dataframe(
+                df
+            )
+        )
 
         if prepared is None:
+
             logger.info(
-                "%s | insufficient/invalid candle data",
+                "%s | insufficient/invalid "
+                "candle data",
                 pair,
             )
+
             return None
 
         try:
-            current_row = prepared.iloc[-1]
+
+            current_row = (
+                prepared.iloc[-1]
+            )
 
             (
                 direction,
@@ -276,45 +331,44 @@ class SignalEngine:
             )
 
             if direction is None:
+
                 logger.info(
-                    "%s | no direction from current candle",
+                    "%s | no direction "
+                    "from current candle",
                     pair,
                 )
+
                 return None
 
             if (
                 confirmations
                 < MIN_SIGNAL_CONFIRMATIONS
             ):
+
                 logger.info(
-                    "%s | rejected: confirmations=%s < %s",
+                    "%s | rejected: "
+                    "confirmations=%s < %s",
                     pair,
                     confirmations,
                     MIN_SIGNAL_CONFIRMATIONS,
                 )
+
                 return None
 
             if (
                 confidence
                 < MIN_SIGNAL_CONFIDENCE
             ):
+
                 logger.info(
-                    "%s | rejected: confidence=%.2f < %.2f",
+                    "%s | rejected: "
+                    "confidence=%.2f < %.2f",
                     pair,
                     confidence,
                     MIN_SIGNAL_CONFIDENCE,
                 )
-                return None
 
-            # ---------------------------------------------------------
-            # HISTORICAL BACKTEST
-            # ---------------------------------------------------------
-            #
-            # Проверяем именно то направление, которое показывает
-            # текущая свеча.
-            #
-            # Это важнее общего winrate пары.
-            # ---------------------------------------------------------
+                return None
 
             backtest = run_backtest(
                 prepared,
@@ -331,6 +385,7 @@ class SignalEngine:
             )
 
             if trades < 10:
+
                 logger.info(
                     "%s | %s min | rejected: "
                     "only %s historical trades",
@@ -338,12 +393,14 @@ class SignalEngine:
                     expiry,
                     trades,
                 )
+
                 return None
 
             if (
                 historical_winrate
                 < MIN_SIGNAL_WINRATE
             ):
+
                 logger.info(
                     "%s | %s min | rejected: "
                     "historical winrate %.2f%% < %.2f%%",
@@ -352,53 +409,52 @@ class SignalEngine:
                     historical_winrate,
                     MIN_SIGNAL_WINRATE,
                 )
-                return None
 
-            # ---------------------------------------------------------
-            # Probability calibrator.
-            #
-            # Он используется как дополнительная статистика/metadata,
-            # но не должен второй раз уничтожать уже подтверждённый
-            # историческим backtest кандидат.
-            # ---------------------------------------------------------
+                return None
 
             calibrated_probability = None
 
             try:
+
                 calibrated_probability = (
                     self.calibrator.calibrate(
                         historical_winrate
                     )
                 )
+
             except TypeError:
+
                 try:
+
                     calibrated_probability = (
                         self.calibrator.calibrate(
                             historical_winrate,
                             trades,
                         )
                     )
+
                 except Exception:
+
                     calibrated_probability = None
+
             except Exception:
+
                 calibrated_probability = None
 
-            quality = self._quality_score(
-                confidence=confidence,
-                winrate=historical_winrate,
-                confirmations=confirmations,
+            quality = (
+                self._quality_score(
+                    confidence=confidence,
+                    winrate=historical_winrate,
+                    confirmations=confirmations,
+                )
             )
 
-            # Quality Score не должен отбрасывать сигнал,
-            # если основные требования уже выполнены.
-            #
-            # Но если конфигурация явно установила порог,
-            # оставляем мягкую проверку только ниже базового
-            # минимального значения.
             if (
                 MIN_SIGNAL_QUALITY > 0
-                and quality < MIN_SIGNAL_QUALITY
+                and quality
+                < MIN_SIGNAL_QUALITY
             ):
+
                 logger.info(
                     "%s | %s min | rejected: "
                     "quality %.2f < %.2f",
@@ -407,6 +463,7 @@ class SignalEngine:
                     quality,
                     MIN_SIGNAL_QUALITY,
                 )
+
                 return None
 
             entry_price = float(
@@ -424,39 +481,56 @@ class SignalEngine:
                 )
             )
 
-            metadata: Dict[str, Any] = {
+            metadata: Dict[
+                str,
+                Any,
+            ] = {
+
                 "historical_total": (
                     backtest.total
                 ),
+
                 "historical_wins": (
                     backtest.wins
                 ),
+
                 "historical_losses": (
                     backtest.losses
                 ),
+
                 "historical_draws": (
                     backtest.draws
                 ),
+
                 "historical_decisive": (
                     trades
                 ),
+
                 "historical_winrate": (
                     historical_winrate
                 ),
+
                 "calibrated_probability": (
                     calibrated_probability
                 ),
+
                 "min_required_winrate": (
                     MIN_SIGNAL_WINRATE
                 ),
+
                 "min_required_trades": 10,
+
                 "min_confirmations": (
                     MIN_SIGNAL_CONFIRMATIONS
                 ),
+
                 "source": source,
             }
 
-            indicators: Dict[str, Any] = {}
+            indicators: Dict[
+                str,
+                Any,
+            ] = {}
 
             indicator_names = [
                 "ema_fast",
@@ -478,23 +552,26 @@ class SignalEngine:
             ]
 
             for name in indicator_names:
+
                 if name not in current_row:
                     continue
 
                 value = current_row[name]
 
                 try:
+
                     if pd.isna(value):
                         continue
 
-                    indicators[name] = float(
-                        value
+                    indicators[name] = (
+                        float(value)
                     )
 
                 except (
                     TypeError,
                     ValueError,
                 ):
+
                     indicators[name] = value
 
             candidate = SignalCandidate(
@@ -507,7 +584,9 @@ class SignalEngine:
                 ),
                 quality=quality,
                 winrate=round(
-                    float(historical_winrate),
+                    float(
+                        historical_winrate
+                    ),
                     2,
                 ),
                 entry_price=entry_price,
@@ -546,16 +625,20 @@ class SignalEngine:
             return candidate
 
         except Exception:
+
             logger.exception(
                 "%s | SignalEngine analyze failed",
                 pair,
             )
+
             return None
 
     def find_best(
         self,
         candidates,
-    ) -> Optional[SignalCandidate]:
+    ) -> Optional[
+        SignalCandidate
+    ]:
 
         valid = [
             candidate
@@ -582,14 +665,12 @@ class SignalEngine:
         min_expiry: int = 1,
         max_expiry: Optional[int] = None,
     ):
-        """
-        Синхронный helper для проверки нескольких экспираций.
-
-        Scanner может запускать этот метод через asyncio.to_thread.
-        """
 
         if max_expiry is None:
-            max_expiry = MAX_EXPIRY_MINUTES
+
+            max_expiry = (
+                MAX_EXPIRY_MINUTES
+            )
 
         min_expiry = max(
             1,
@@ -607,6 +688,7 @@ class SignalEngine:
             min_expiry,
             max_expiry + 1,
         ):
+
             candidate = self.analyze(
                 pair=pair,
                 market=market,
