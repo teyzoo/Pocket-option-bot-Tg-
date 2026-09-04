@@ -19,12 +19,12 @@ class MarketDefinition:
 
 REGULAR_MARKET = MarketDefinition(
     name=MARKET_REGULAR,
-    pairs=NORMAL_PAIRS,
+    pairs=tuple(NORMAL_PAIRS),
 )
 
 OTC_MARKET = MarketDefinition(
     name=MARKET_OTC,
-    pairs=OTC_PAIRS,
+    pairs=tuple(OTC_PAIRS),
 )
 
 
@@ -33,6 +33,8 @@ class PairSelector:
         self,
         market: str = MARKET_REGULAR,
     ) -> tuple[str, ...]:
+        market = str(market).strip().lower()
+
         if market == MARKET_OTC:
             return OTC_MARKET.pairs
 
@@ -56,7 +58,9 @@ class PairSelector:
         pair: str,
         market: str = MARKET_REGULAR,
     ) -> bool:
-        return pair.upper() in {
+        normalized = pair.strip().upper()
+
+        return normalized in {
             item.upper()
             for item in self.available_pairs(market)
         }
@@ -81,16 +85,5 @@ class PairSelector:
     ) -> tuple[str, ...]:
         return self.available_pairs(market)
 
-
-# ---------------------------------------------------------------------------
-# Backward-compatible module-level instance.
-#
-# Existing modules import:
-#     from pair_selector import pair_selector
-#
-# Keep the class above intact and expose a shared instance so both APIs work:
-#     PairSelector()
-#     pair_selector.available_pairs(...)
-# ---------------------------------------------------------------------------
 
 pair_selector = PairSelector()
