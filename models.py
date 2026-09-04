@@ -63,7 +63,6 @@ class SignalCandidate:
     market: str = "regular"
 
     reasons: list[str] = field(default_factory=list)
-
     confirmations: int = 0
 
     indicators: dict[str, Any] = field(
@@ -98,19 +97,26 @@ class BacktestResult:
 
     @property
     def decisive_trades(self) -> int:
-        return self.wins + self.losses
+        return max(
+            0,
+            int(self.wins) + int(self.losses),
+        )
 
     @property
     def winrate(self) -> float:
-        if self.decisive_trades <= 0:
+        decisive = self.decisive_trades
+
+        if decisive <= 0:
             return 0.0
 
         return (
-            self.wins
-            / self.decisive_trades
+            float(self.wins)
+            / float(decisive)
             * 100.0
         )
 
     @property
     def reliable(self) -> bool:
-        return self.decisive_trades >= 30
+        # Минимальная выборка для исторической оценки.
+        # Сам порог WINRATE проверяется отдельно.
+        return self.decisive_trades >= 10
