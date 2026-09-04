@@ -8,10 +8,7 @@ from typing import Final
 # HELPERS
 # ============================================================
 
-def _get_str(
-    name: str,
-    default: str = "",
-) -> str:
+def _get_str(name: str, default: str = "") -> str:
     value = os.getenv(name)
 
     if value is None:
@@ -20,10 +17,7 @@ def _get_str(
     return value.strip()
 
 
-def _get_int(
-    name: str,
-    default: int,
-) -> int:
+def _get_int(name: str, default: int) -> int:
     value = os.getenv(name)
 
     if value is None or not value.strip():
@@ -35,10 +29,7 @@ def _get_int(
         return default
 
 
-def _get_float(
-    name: str,
-    default: float,
-) -> float:
+def _get_float(name: str, default: float) -> float:
     value = os.getenv(name)
 
     if value is None or not value.strip():
@@ -50,10 +41,7 @@ def _get_float(
         return default
 
 
-def _get_bool(
-    name: str,
-    default: bool,
-) -> bool:
+def _get_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
 
     if value is None:
@@ -185,7 +173,7 @@ ALL_PRIVILEGED_IDS: Final[list[int]] = list(
     )
 )
 
-# Compatibility with old modules.
+# Compatibility:
 ADMIN_IDS = list(
     ALL_PRIVILEGED_IDS
 )
@@ -209,6 +197,42 @@ ACCESS_BLACKLISTED: Final[str] = "blacklisted"
 
 
 # ============================================================
+# SIGNAL RESULTS
+# ============================================================
+#
+# IMPORTANT:
+# handlers.py and signal_service.py use these names.
+#
+
+SIGNAL_RESULT_WIN: Final[str] = "win"
+
+SIGNAL_RESULT_LOSS: Final[str] = "loss"
+
+SIGNAL_RESULT_DRAW: Final[str] = "draw"
+
+SIGNAL_RESULT_PENDING: Final[str] = "pending"
+
+SIGNAL_RESULT_UNKNOWN: Final[str] = "unknown"
+
+
+# Compatibility aliases used by older modules.
+
+RESULT_WIN: Final[str] = SIGNAL_RESULT_WIN
+
+RESULT_LOSS: Final[str] = SIGNAL_RESULT_LOSS
+
+RESULT_DRAW: Final[str] = SIGNAL_RESULT_DRAW
+
+RESULT_PENDING: Final[str] = SIGNAL_RESULT_PENDING
+
+SIGNAL_WIN: Final[str] = SIGNAL_RESULT_WIN
+
+SIGNAL_LOSS: Final[str] = SIGNAL_RESULT_LOSS
+
+SIGNAL_DRAW: Final[str] = SIGNAL_RESULT_DRAW
+
+
+# ============================================================
 # DATABASE
 # ============================================================
 
@@ -220,6 +244,46 @@ if not DATABASE_URL:
     raise RuntimeError(
         "Environment variable DATABASE_URL is required"
     )
+
+
+def _make_async_database_url(
+    url: str,
+) -> str:
+    if url.startswith(
+        "postgresql+asyncpg://"
+    ):
+        return url
+
+    if url.startswith(
+        "postgresql://"
+    ):
+        return url.replace(
+            "postgresql://",
+            "postgresql+asyncpg://",
+            1,
+        )
+
+    if url.startswith(
+        "postgres://"
+    ):
+        return url.replace(
+            "postgres://",
+            "postgresql+asyncpg://",
+            1,
+        )
+
+    return url
+
+
+DATABASE_ASYNC_URL: Final[str] = (
+    _make_async_database_url(
+        DATABASE_URL
+    )
+)
+
+DATABASE_URL_ASYNC: Final[str] = (
+    DATABASE_ASYNC_URL
+)
 
 
 DB_POOL_SIZE: Final[int] = max(
@@ -254,8 +318,6 @@ DB_POOL_RECYCLE: Final[int] = max(
     ),
 )
 
-
-# Old compatibility names.
 
 DATABASE_POOL_SIZE: Final[int] = DB_POOL_SIZE
 
@@ -295,7 +357,7 @@ TWELVE_DATA_MAX_CANDLES: Final[int] = max(
     80,
     _get_int(
         "TWELVE_DATA_MAX_CANDLES",
-        300,
+        500,
     ),
 )
 
@@ -340,16 +402,14 @@ MAX_CANDLES: Final[int] = max(
     MIN_CANDLES_REQUIRED,
     _get_int(
         "MAX_CANDLES",
-        300,
+        500,
     ),
 )
 
-
-# ============================================================
-# CRITICAL COMPATIBILITY ALIAS
-# ============================================================
-
-MIN_CANDLES: Final[int] = MIN_CANDLES_REQUIRED
+# Critical compatibility alias.
+MIN_CANDLES: Final[int] = (
+    MIN_CANDLES_REQUIRED
+)
 
 
 # ============================================================
@@ -395,6 +455,38 @@ MIN_SIGNAL_CONFIRMATIONS: Final[int] = max(
         "MIN_SIGNAL_CONFIRMATIONS",
         4,
     ),
+)
+
+
+# ============================================================
+# COMPATIBILITY THRESHOLDS
+# ============================================================
+
+MIN_SIGNAL_SCORE: Final[float] = max(
+    0.0,
+    min(
+        100.0,
+        _get_float(
+            "MIN_SIGNAL_SCORE",
+            75.0,
+        ),
+    ),
+)
+
+MIN_QUALITY_SCORE: Final[float] = (
+    MIN_SIGNAL_QUALITY
+)
+
+MIN_PROBABILITY: Final[float] = (
+    MIN_SIGNAL_WINRATE
+)
+
+MIN_CONFIDENCE: Final[float] = (
+    MIN_SIGNAL_CONFIDENCE
+)
+
+MIN_CONFIRMATIONS: Final[int] = (
+    MIN_SIGNAL_CONFIRMATIONS
 )
 
 
@@ -540,7 +632,7 @@ ATR_PERIOD: Final[int] = max(
 
 
 # ============================================================
-# INDICATOR COMPATIBILITY ALIASES
+# INDICATOR ALIASES
 # ============================================================
 
 EMA_FAST: Final[int] = EMA_FAST_PERIOD
@@ -563,11 +655,17 @@ BOLLINGER_STDDEV: Final[float] = BB_STDDEV
 
 BOLLINGER_STD: Final[float] = BB_STDDEV
 
-STOCHASTIC_K_PERIOD: Final[int] = STOCHASTIC_PERIOD
+STOCHASTIC_K_PERIOD: Final[int] = (
+    STOCHASTIC_PERIOD
+)
 
-STOCHASTIC_D_PERIOD: Final[int] = STOCHASTIC_SMOOTHING
+STOCHASTIC_D_PERIOD: Final[int] = (
+    STOCHASTIC_SMOOTHING
+)
 
-STOCHASTIC_SMOOTH: Final[int] = STOCHASTIC_SMOOTHING
+STOCHASTIC_SMOOTH: Final[int] = (
+    STOCHASTIC_SMOOTHING
+)
 
 
 # ============================================================
@@ -623,7 +721,7 @@ SIGNAL_DEDUPLICATION_MINUTES: Final[int] = max(
 
 
 # ============================================================
-# EXPIRY / TIME
+# EXPIRY
 # ============================================================
 
 MIN_EXPIRY_MINUTES: Final[int] = max(
@@ -652,6 +750,14 @@ EXPIRY_MINUTES: Final[list[int]] = list(
     )
 )
 
+MIN_EXPIRY: Final[int] = (
+    MIN_EXPIRY_MINUTES
+)
+
+MAX_EXPIRY: Final[int] = (
+    MAX_EXPIRY_MINUTES
+)
+
 
 # ============================================================
 # PAIRS
@@ -677,12 +783,8 @@ REGULAR_PAIRS: Final[list[str]] = _get_list(
 
 
 # ============================================================
-# IMPORTANT COMPATIBILITY ALIAS
+# CRITICAL COMPATIBILITY ALIAS
 # ============================================================
-#
-# keyboards.py imports NORMAL_PAIRS.
-# It must always exist.
-#
 
 NORMAL_PAIRS: Final[list[str]] = list(
     REGULAR_PAIRS
@@ -702,6 +804,20 @@ MAX_PAIRS: Final[int] = max(
 
 
 # ============================================================
+# OTC
+# ============================================================
+
+OTC_PAIRS: Final[list[str]] = _get_list(
+    "OTC_PAIRS",
+    [],
+)
+
+POCKET_OPTION_OTC_PAIRS: Final[list[str]] = list(
+    OTC_PAIRS
+)
+
+
+# ============================================================
 # MARKET
 # ============================================================
 
@@ -710,23 +826,25 @@ DEFAULT_MARKET: Final[str] = _get_str(
     "regular",
 )
 
-MARKETS: Final[list[str]] = [
-    "regular",
-    "otc",
-]
-
-
-# ============================================================
-# MARKET COMPATIBILITY ALIASES
-# ============================================================
-
 MARKET_REGULAR: Final[str] = "regular"
 
 MARKET_OTC: Final[str] = "otc"
 
-REGULAR_MARKET: Final[str] = MARKET_REGULAR
+REGULAR_MARKET: Final[str] = (
+    MARKET_REGULAR
+)
 
-OTC_MARKET: Final[str] = MARKET_OTC
+OTC_MARKET: Final[str] = (
+    MARKET_OTC
+)
+
+# OTC remains available for the UI,
+# but the automatic scanner can still
+# use regular market only.
+MARKETS: Final[list[str]] = [
+    "regular",
+    "otc",
+]
 
 
 # ============================================================
@@ -785,9 +903,17 @@ BACKTEST_MIN_WINRATE: Final[float] = max(
         100.0,
         _get_float(
             "BACKTEST_MIN_WINRATE",
-            MIN_SIGNAL_WINRATE,
+            75.0,
         ),
     ),
+)
+
+MIN_BACKTEST_TRADES: Final[int] = (
+    BACKTEST_MIN_TRADES
+)
+
+MIN_HISTORICAL_TRADES: Final[int] = (
+    BACKTEST_MIN_TRADES
 )
 
 
@@ -829,6 +955,26 @@ CHART_DIRECTORY: Final[str] = _get_str(
     "charts",
 )
 
+CHARTS_DIR: Final[str] = (
+    CHART_DIRECTORY
+)
+
+
+# ============================================================
+# TIMEZONE
+# ============================================================
+
+TIMEZONE: Final[str] = _get_str(
+    "TIMEZONE",
+    "Europe/Moscow",
+)
+
+DEFAULT_TIMEZONE: Final[str] = TIMEZONE
+
+MOSCOW_TIMEZONE: Final[str] = (
+    "Europe/Moscow"
+)
+
 
 # ============================================================
 # LOGGING
@@ -841,21 +987,7 @@ LOG_LEVEL: Final[str] = _get_str(
 
 
 # ============================================================
-# TIMEZONE
-# ============================================================
-
-TIMEZONE: Final[str] = _get_str(
-    "TIMEZONE",
-    "Europe/Moscow",
-)
-
-MOSCOW_TIMEZONE: Final[str] = (
-    "Europe/Moscow"
-)
-
-
-# ============================================================
-# TELEGRAM MESSAGES
+# TELEGRAM / SCHEDULER
 # ============================================================
 
 MAX_REASONS: Final[int] = max(
@@ -866,49 +998,20 @@ MAX_REASONS: Final[int] = max(
     ),
 )
 
-
-# ============================================================
-# SAFETY / LIMITS
-# ============================================================
-
-MIN_SIGNAL_SCORE: Final[float] = max(
-    0.0,
-    min(
-        100.0,
-        _get_float(
-            "MIN_SIGNAL_SCORE",
-            75.0,
-        ),
+POLLING_RESTART_SECONDS: Final[int] = max(
+    1,
+    _get_int(
+        "POLLING_RESTART_SECONDS",
+        5,
     ),
 )
 
-MIN_QUALITY_SCORE: Final[float] = (
-    MIN_SIGNAL_QUALITY
-)
-
-
-# ============================================================
-# DEFAULTS FOR OLD MODULES
-# ============================================================
-
-MIN_PROBABILITY: Final[float] = (
-    MIN_SIGNAL_WINRATE
-)
-
-MIN_CONFIDENCE: Final[float] = (
-    MIN_SIGNAL_CONFIDENCE
-)
-
-MIN_CONFIRMATIONS: Final[int] = (
-    MIN_SIGNAL_CONFIRMATIONS
-)
-
-MAX_EXPIRY: Final[int] = (
-    MAX_EXPIRY_MINUTES
-)
-
-MIN_EXPIRY: Final[int] = (
-    MIN_EXPIRY_MINUTES
+TELEGRAM_CONFLICT_RETRY_SECONDS: Final[int] = max(
+    1,
+    _get_int(
+        "TELEGRAM_CONFLICT_RETRY_SECONDS",
+        5,
+    ),
 )
 
 
