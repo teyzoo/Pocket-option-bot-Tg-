@@ -19,27 +19,11 @@ class ProbabilityEstimate:
 
 
 class ProbabilityCalibrator:
-    """
-    Историческая оценка вероятности сигнала.
-
-    ВАЖНО:
-    reliable означает только то, что исторической выборки
-    достаточно для базовой оценки.
-
-    Сам WINRATE по-прежнему должен проходить отдельный
-    фильтр MIN_SIGNAL_WINRATE в SignalEngine.
-    """
-
     def __init__(
         self,
         minimum_trades: int = 10,
         minimum_winrate: float = 75.0,
     ) -> None:
-        # 10 сделок — минимальная техническая выборка.
-        #
-        # Само значение WINRATE всё равно проверяется отдельно.
-        # Это не означает, что бот будет выдавать сигнал с WINRATE ниже
-        # установленного порога.
         self.minimum_trades = max(
             1,
             int(minimum_trades),
@@ -77,14 +61,7 @@ class ProbabilityCalibrator:
             TypeError,
             ValueError,
         ):
-            return ProbabilityEstimate(
-                winrate=0.0,
-                trades=0,
-                wins=0,
-                losses=0,
-                draws=0,
-                reliable=False,
-            )
+            expiry = 1
 
         try:
             result: BacktestResult = run_backtest(
@@ -121,17 +98,21 @@ class ProbabilityCalibrator:
             int(result.draws),
         )
 
+        winrate = float(
+            result.winrate or 0.0
+        )
+
+        reliable = (
+            trades >= self.minimum_trades
+        )
+
         return ProbabilityEstimate(
-            winrate=float(
-                result.winrate or 0.0
-            ),
+            winrate=winrate,
             trades=trades,
             wins=wins,
             losses=losses,
             draws=draws,
-            reliable=(
-                trades >= self.minimum_trades
-            ),
+            reliable=reliable,
         )
 
     def meets_minimum(
@@ -141,18 +122,12 @@ class ProbabilityCalibrator:
         if estimate is None:
             return False
 
-        if not estimate.reliable:
-            return False
-
         return (
-            float(estimate.winrate)
+            estimate.reliable
+            and float(estimate.winrate)
             >= self.minimum_winrate
         )
 
-
-# ============================================================
-# GLOBAL INSTANCE
-# ============================================================
 
 probability_calibrator = ProbabilityCalibrator(
     minimum_trades=10,
