@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Iterable
 
 from candle_filter import candle_filter_service
@@ -17,29 +16,11 @@ from signal_engine import SignalEngine
 
 
 class SignalScanner:
-    """
-    Центральный сканер рынка.
-
-    Поддерживает:
-
-    - одну пару;
-    - несколько пар;
-    - конкретную экспирацию 1..20 минут;
-    - автоматический режим "any";
-    - ограничение количества пар;
-    - сохранение старого API.
-    """
-
     def __init__(
         self,
         market: MarketClient | None = None,
         engine: SignalEngine | None = None,
     ) -> None:
-        # ----------------------------------------------------
-        # Если зависимости не переданы,
-        # используем глобальные экземпляры.
-        # ----------------------------------------------------
-
         self.market = (
             market
             if market is not None
@@ -52,18 +33,12 @@ class SignalScanner:
             else SignalEngine()
         )
 
-    # ========================================================
-    # EXPIRY NORMALIZATION
-    # ========================================================
-
     @staticmethod
     def _normalize_expiry(
         expiry_minutes,
     ) -> int | None:
         try:
-            value = int(
-                expiry_minutes
-            )
+            value = int(expiry_minutes)
         except (
             TypeError,
             ValueError,
@@ -79,41 +54,36 @@ class SignalScanner:
 
         return value
 
-    # ========================================================
-    # SCAN ONE PAIR
-    # ========================================================
+    @staticmethod
+    def _is_any_expiry(
+        expiry_minutes,
+    ) -> bool:
+        if not isinstance(
+            expiry_minutes,
+            str,
+        ):
+            return False
 
-    async def scan_pair(
+        return (
+            expiry_minutes.strip().lower()
+            in {
+                "any",
+                "all",
+                "любое",
+                "любое время",
+            }
+        )
+
+    async def _load_pair(
         self,
         pair: str,
         market: str,
-        expiry_minutes: int,
-        source: str = "manual",
-    ) -> SignalCandidate | None:
-        """
-        Анализирует одну пару.
-        """
-
-        expiry = self._normalize_expiry(
-            expiry_minutes
-        )
-
-        if expiry is None:
-            return None
-
-        # ----------------------------------------------------
-        # Проверка пары.
-        # ----------------------------------------------------
-
+    ):
         if not pair_selector.is_allowed(
             pair,
             market,
         ):
             return None
-
-        # ----------------------------------------------------
-        # Получаем свечи.
-        # ----------------------------------------------------
 
         df = await self.market.get_candles(
             symbol=pair,
@@ -123,10 +93,6 @@ class SignalScanner:
 
         if df is None or df.empty:
             return None
-
-        # ----------------------------------------------------
-        # Candle filter.
-        # ----------------------------------------------------
 
         filtered = await candle_filter_service.apply(
             df
@@ -138,21 +104,42 @@ class SignalScanner:
         if len(filtered) < MIN_CANDLES_REQUIRED:
             return None
 
-        # ----------------------------------------------------
-        # Signal Engine.
-        # ----------------------------------------------------
+        return filtered
 
-        return self.engine.analyze(
-            pair=pair,
-            market=market,
-            df=filtered,
-            expiry_minutes=expiry,
-            source=source,
+    async def scan_pair(
+        self,
+        pair: str,
+        market: str,
+        expiry_minutes: int,
+        source: str = "manual",
+    ) -> SignalCandidate | None:
+
+        expiry = self._normalize_expiry(
+            expiry_minutes
         )
 
-    # ========================================================
-    # SCAN MANY PAIRS
-    # ========================================================
+        if expiry is None:
+            return None
+
+        try:
+            df = await self._load_pair(
+                pair,
+                market,
+            )
+
+            if df is None:
+                return None
+
+            return self.engine.analyze(
+                pair=pair,
+                market=market,
+                df=df,
+                expiry_minutes=expiry,
+                source=source,
+            )
+
+        except Exception:
+            return None
 
     async def scan(
         self,
@@ -162,20 +149,6 @@ class SignalScanner:
         source: str = "manual",
         max_pairs: int | None = None,
     ) -> SignalCandidate | None:
-        """
-        Сканирует пары и возвращает лучший сигнал.
-
-        expiry_minutes:
-            1..20
-            или "any".
-
-        При "any":
-            проверяются все экспирации от 1 до 20 минут.
-        """
-
-        # ----------------------------------------------------
-        # Формируем список пар.
-        # ----------------------------------------------------
 
         if pairs is None:
             pairs = pair_selector.available_pairs(
@@ -186,47 +159,73 @@ class SignalScanner:
 
         if max_pairs is not None:
             try:
-                max_pairs = int(
-                    max_pairs
-                )
+                max_pairs = int(max_pairs)
             except (
                 TypeError,
                 ValueError,
             ):
-                max_pairs = None
+                max_pairs = len(pair_list)
 
-        if max_pairs is not None:
             max_pairs = max(
                 1,
                 min(
-                    len(pair_list),
                     max_pairs,
+                    len(pair_list),
                 ),
             )
 
-            pair_list = pair_list[
-                :max_pairs
-            ]
+            pair_list = pair_list[:max_pairs]
 
         if not pair_list:
             return None
 
-        # ----------------------------------------------------
-        # Режим "Любое время".
-        # ----------------------------------------------------
+        candidates: list[SignalCandidate] = []
 
-        if (
-            isinstance(
-                expiry_minutes,
-                str,
+        # ====================================================
+        # ОДНА ЭКСПИРАЦИЯ
+        # ====================================================
+
+        expiry = self._normalize_expiry(
+            expiry_minutes
+        )
+
+        if expiry is not None:
+            for pair in pair_list:
+                try:
+                    df = await self._load_pair(
+                        pair,
+                        market,
+                    )
+
+                    if df is None:
+                        continue
+
+                    candidate = self.engine.analyze(
+                        pair=pair,
+                        market=market,
+                        df=df,
+                        expiry_minutes=expiry,
+                        source=source,
+                    )
+
+                    if candidate is not None:
+                        candidates.append(
+                            candidate
+                        )
+
+                except Exception:
+                    continue
+
+            return self._select_best(
+                candidates
             )
-            and expiry_minutes.strip().lower()
-            in {
-                "any",
-                "all",
-                "любое",
-                "любое время",
-            }
+
+        # ====================================================
+        # ЛЮБОЕ ВРЕМЯ
+        # ====================================================
+
+        if self._is_any_expiry(
+            expiry_minutes
         ):
             return await self._scan_any_expiry(
                 market=market,
@@ -234,53 +233,7 @@ class SignalScanner:
                 source=source,
             )
 
-        # ----------------------------------------------------
-        # Обычный режим.
-        # ----------------------------------------------------
-
-        expiry = self._normalize_expiry(
-            expiry_minutes
-        )
-
-        if expiry is None:
-            return None
-
-        candidates: list[
-            SignalCandidate
-        ] = []
-
-        # ----------------------------------------------------
-        # Пары анализируем последовательно.
-        #
-        # Это безопаснее для лимитов Twelve Data.
-        # ----------------------------------------------------
-
-        for pair in pair_list:
-            try:
-                candidate = await self.scan_pair(
-                    pair=pair,
-                    market=market,
-                    expiry_minutes=expiry,
-                    source=source,
-                )
-
-                if candidate is not None:
-                    candidates.append(
-                        candidate
-                    )
-
-            except Exception:
-                # Ошибка одной пары не должна
-                # остановить весь поиск.
-                continue
-
-        return self._select_best(
-            candidates
-        )
-
-    # ========================================================
-    # ANY EXPIRY
-    # ========================================================
+        return None
 
     async def _scan_any_expiry(
         self,
@@ -288,90 +241,56 @@ class SignalScanner:
         pairs: list[str],
         source: str,
     ) -> SignalCandidate | None:
-        """
-        Автоматический режим.
 
-        Проверяет экспирации:
-            1, 2, 3 ... 20 минут.
+        candidates: list[SignalCandidate] = []
 
-        Для каждой пары стараемся не падать
-        при ошибке конкретной комбинации.
-        """
-
-        candidates: list[
-            SignalCandidate
-        ] = []
-
-        # ----------------------------------------------------
-        # Чтобы не создавать огромный burst запросов,
-        # выполняем комбинации контролируемо.
-        # ----------------------------------------------------
-
-        for expiry in range(
-            MIN_EXPIRY_MINUTES,
-            MAX_EXPIRY_MINUTES + 1,
-        ):
-            # ------------------------------------------------
-            # Параллельно проверяем пары для одной экспирации.
-            # ------------------------------------------------
-
-            tasks = [
-                self._safe_scan_pair(
-                    pair=pair,
-                    market=market,
-                    expiry=expiry,
-                    source=source,
+        # ВАЖНО:
+        # свечи получаем ОДИН раз на пару.
+        # Затем 1..20 минут анализируются локально.
+        # Это предотвращает до 160 запросов API.
+        for pair in pairs:
+            try:
+                df = await self._load_pair(
+                    pair,
+                    market,
                 )
-                for pair in pairs
-            ]
 
-            results = await asyncio.gather(
-                *tasks,
-                return_exceptions=True,
-            )
+                if df is None:
+                    continue
 
-            for result in results:
-                if isinstance(
-                    result,
-                    SignalCandidate,
+                for expiry in range(
+                    MIN_EXPIRY_MINUTES,
+                    MAX_EXPIRY_MINUTES + 1,
                 ):
-                    candidates.append(
-                        result
-                    )
+                    try:
+                        candidate = self.engine.analyze(
+                            pair=pair,
+                            market=market,
+                            df=df,
+                            expiry_minutes=expiry,
+                            source=source,
+                        )
+
+                        if candidate is not None:
+                            candidates.append(
+                                candidate
+                            )
+
+                    except Exception:
+                        continue
+
+            except Exception:
+                continue
 
         return self._select_best(
             candidates
         )
 
-    # ========================================================
-    # SAFE SCAN
-    # ========================================================
-
-    async def _safe_scan_pair(
-        self,
-        pair: str,
-        market: str,
-        expiry: int,
-        source: str,
-    ) -> SignalCandidate | None:
-        try:
-            return await self.scan_pair(
-                pair=pair,
-                market=market,
-                expiry_minutes=expiry,
-                source=source,
-            )
-        except Exception:
-            return None
-
-    # ========================================================
-    # BEST CANDIDATE
-    # ========================================================
-
     @staticmethod
     def _select_best(
         candidates: list[SignalCandidate],
     ) -> SignalCandidate | None:
+
         if not candidates:
             return None
 
