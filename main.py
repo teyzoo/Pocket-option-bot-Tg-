@@ -5,6 +5,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramConflictError
 from fastapi import FastAPI
 
 from admin import router as admin_router
@@ -88,20 +89,62 @@ result_checker = SignalResultChecker(
 # ============================================================
 
 async def polling_loop() -> None:
-    logger.info("Telegram polling starting")
+    """
+    Надёжный Telegram polling.
 
-    try:
-        await dp.start_polling(
-            bot,
-            allowed_updates=dp.resolve_used_update_types(),
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.exception(
-            "Telegram polling stopped with error"
-        )
-        raise
+    Если Telegram сообщает ConflictError, приложение не падает.
+    Повторяем подключение с задержкой.
+
+    ВАЖНО:
+    если реально запущены два независимых процесса с одним BOT_TOKEN,
+    только один из них сможет получать updates.
+    """
+
+    logger.info(
+        "Telegram polling starting"
+    )
+
+    retry_delay = 5
+
+    while True:
+        try:
+            await dp.start_polling(
+                bot,
+                allowed_updates=dp.resolve_used_update_types(),
+            )
+
+            logger.warning(
+                "Telegram polling stopped normally; "
+                "restarting in %s seconds",
+                retry_delay,
+            )
+
+            await asyncio.sleep(
+                retry_delay
+            )
+
+        except TelegramConflictError:
+            logger.error(
+                "Telegram polling conflict: "
+                "another process is using the same BOT_TOKEN. "
+                "Retrying in 15 seconds."
+            )
+
+            await asyncio.sleep(15)
+
+        except asyncio.CancelledError:
+            logger.info(
+                "Telegram polling cancelled"
+            )
+            raise
+
+        except Exception:
+            logger.exception(
+                "Telegram polling stopped with error; "
+                "retrying in 10 seconds"
+            )
+
+            await asyncio.sleep(10)
 
 
 # ============================================================
@@ -123,7 +166,7 @@ async def lifespan(
     )
 
     # --------------------------------------------------------
-    # Start background components.
+    # Telegram polling
     # --------------------------------------------------------
 
     polling_task = asyncio.create_task(
@@ -131,7 +174,16 @@ async def lifespan(
         name="telegram-polling",
     )
 
+    # --------------------------------------------------------
+    # Scheduler
+    # --------------------------------------------------------
+
     await scheduler.start()
+
+    # --------------------------------------------------------
+    # Result checker
+    # --------------------------------------------------------
+
     await result_checker.start()
 
     logger.info(
@@ -147,70 +199,77 @@ async def lifespan(
         )
 
         # ----------------------------------------------------
-        # Stop scheduler.
+        # Scheduler
         # ----------------------------------------------------
 
         try:
             await scheduler.stop()
+
         except Exception:
             logger.exception(
                 "Failed to stop signal scheduler"
             )
 
         # ----------------------------------------------------
-        # Stop result checker.
+        # Result checker
         # ----------------------------------------------------
 
         try:
             await result_checker.stop()
+
         except Exception:
             logger.exception(
                 "Failed to stop result checker"
             )
 
         # ----------------------------------------------------
-        # Stop Telegram polling.
+        # Telegram polling
         # ----------------------------------------------------
 
         polling_task.cancel()
 
         try:
             await polling_task
+
         except asyncio.CancelledError:
             pass
+
         except Exception:
             logger.exception(
                 "Telegram polling shutdown error"
             )
 
         # ----------------------------------------------------
-        # Close Telegram session.
+        # Telegram session
         # ----------------------------------------------------
 
         try:
             await bot.session.close()
+
         except Exception:
             logger.exception(
                 "Failed to close Telegram bot session"
             )
 
         # ----------------------------------------------------
-        # Close database.
+        # Database
         # ----------------------------------------------------
 
         try:
             await close_db()
+
         except Exception:
             logger.exception(
                 "Failed to close database"
             )
 
         # ----------------------------------------------------
-        # Close market client.
+        # Market client
         # ----------------------------------------------------
 
         try:
             await market_client.close()
+
         except Exception:
             logger.exception(
                 "Failed to close market client"
@@ -227,7 +286,7 @@ async def lifespan(
 
 app = FastAPI(
     title="TEYZOO Signal Bot",
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
