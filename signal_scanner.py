@@ -15,6 +15,15 @@ from pair_selector import pair_selector
 from signal_engine import SignalEngine
 
 
+ALL_PAIRS_VALUES = {
+    "ALL",
+    "ALL_PAIRS",
+    "ANY_PAIR",
+    "ВСЕ",
+    "ВСЕ ПАРЫ",
+}
+
+
 class SignalScanner:
     def __init__(
         self,
@@ -74,6 +83,20 @@ class SignalScanner:
             }
         )
 
+    @staticmethod
+    def _is_all_pairs(
+        pair: str | None,
+    ) -> bool:
+        if pair is None:
+            return False
+
+        return (
+            str(pair)
+            .strip()
+            .upper()
+            in ALL_PAIRS_VALUES
+        )
+
     async def _load_pair(
         self,
         pair: str,
@@ -110,36 +133,102 @@ class SignalScanner:
         self,
         pair: str,
         market: str,
-        expiry_minutes: int,
+        expiry_minutes,
         source: str = "manual",
     ) -> SignalCandidate | None:
+
+        # ============================================================
+        # ВСЕ ПАРЫ
+        # ============================================================
+
+        if self._is_all_pairs(pair):
+            return await self.scan(
+                market=market,
+                expiry_minutes=expiry_minutes,
+                pairs=pair_selector.available_pairs(
+                    market
+                ),
+                source=source,
+            )
+
+        # ============================================================
+        # ОДНА ПАРА
+        # ============================================================
 
         expiry = self._normalize_expiry(
             expiry_minutes
         )
 
-        if expiry is None:
-            return None
+        if expiry is not None:
+            try:
+                df = await self._load_pair(
+                    pair,
+                    market,
+                )
 
-        try:
-            df = await self._load_pair(
-                pair,
-                market,
-            )
+                if df is None:
+                    return None
 
-            if df is None:
+                return self.engine.analyze(
+                    pair=pair,
+                    market=market,
+                    df=df,
+                    expiry_minutes=expiry,
+                    source=source,
+                )
+
+            except Exception:
                 return None
 
-            return self.engine.analyze(
-                pair=pair,
-                market=market,
-                df=df,
-                expiry_minutes=expiry,
-                source=source,
-            )
+        # ============================================================
+        # ЛЮБОЕ ВРЕМЯ ДЛЯ ОДНОЙ ПАРЫ
+        # ============================================================
 
-        except Exception:
-            return None
+        if self._is_any_expiry(
+            expiry_minutes
+        ):
+            try:
+                df = await self._load_pair(
+                    pair,
+                    market,
+                )
+
+                if df is None:
+                    return None
+
+                candidates: list[
+                    SignalCandidate
+                ] = []
+
+                for expiry in range(
+                    MIN_EXPIRY_MINUTES,
+                    MAX_EXPIRY_MINUTES + 1,
+                ):
+                    try:
+                        candidate = self.engine.analyze(
+                            pair=pair,
+                            market=market,
+                            df=df,
+                            expiry_minutes=expiry,
+                            source=source,
+                        )
+
+                        if candidate is not None:
+                            candidates.append(
+                                candidate
+                            )
+
+                    except Exception:
+                        continue
+
+                return self._select_best(
+                    candidates
+                )
+
+            except Exception:
+                return None
+
+        return None
 
     async def scan(
         self,
@@ -179,11 +268,13 @@ class SignalScanner:
         if not pair_list:
             return None
 
-        candidates: list[SignalCandidate] = []
+        candidates: list[
+            SignalCandidate
+        ] = []
 
-        # ====================================================
+        # ============================================================
         # ОДНА ЭКСПИРАЦИЯ
-        # ====================================================
+        # ============================================================
 
         expiry = self._normalize_expiry(
             expiry_minutes
@@ -220,9 +311,9 @@ class SignalScanner:
                 candidates
             )
 
-        # ====================================================
+        # ============================================================
         # ЛЮБОЕ ВРЕМЯ
-        # ====================================================
+        # ============================================================
 
         if self._is_any_expiry(
             expiry_minutes
@@ -242,12 +333,16 @@ class SignalScanner:
         source: str,
     ) -> SignalCandidate | None:
 
-        candidates: list[SignalCandidate] = []
+        candidates: list[
+            SignalCandidate
+        ] = []
 
+        # ------------------------------------------------------------
         # ВАЖНО:
-        # свечи получаем ОДИН раз на пару.
-        # Затем 1..20 минут анализируются локально.
-        # Это предотвращает до 160 запросов API.
+        # На каждую пару получаем свечи только ОДИН раз.
+        # Затем локально проверяем 1..20 минут.
+        # ------------------------------------------------------------
+
         for pair in pairs:
             try:
                 df = await self._load_pair(
@@ -288,7 +383,9 @@ class SignalScanner:
 
     @staticmethod
     def _select_best(
-        candidates: list[SignalCandidate],
+        candidates: list[
+            SignalCandidate
+        ],
     ) -> SignalCandidate | None:
 
         if not candidates:
@@ -300,14 +397,6 @@ class SignalScanner:
                 float(
                     getattr(
                         item,
-                        "winrate",
-                        0,
-                    )
-                    or 0
-                ),
-                float(
-                    getattr(
-                        item,
                         "quality",
                         0,
                     )
@@ -316,7 +405,23 @@ class SignalScanner:
                 float(
                     getattr(
                         item,
+                        "winrate",
+                        0,
+                    )
+                    or 0
+                ),
+                float(
+                    getattr(
+                        item,
                         "confidence",
+                        0,
+                    )
+                    or 0
+                ),
+                int(
+                    getattr(
+                        item,
+                        "confirmations",
                         0,
                     )
                     or 0
