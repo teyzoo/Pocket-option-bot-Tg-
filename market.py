@@ -1,645 +1,613 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
-from typing import Any
+from typing import Any, Dict, Iterable, List, Optional
 
 import httpx
 import pandas as pd
 
-from config import (
-    MAX_CANDLES,
-    TWELVE_DATA_API_KEY,
-    TWELVE_DATA_BASE_URL,
-    TWELVE_DATA_CACHE_SECONDS,
-    TWELVE_DATA_TIMEOUT,
-)
+from config import TWELVE_DATA_API_KEY
 
 
-class MarketAPIError(Exception):
-    """
-    Ошибка получения рыночных данных.
-    """
+logger = logging.getLogger("market")
+
+
+TWELVE_DATA_URL = "https://api.twelvedata.com/time_series"
+
+
+# Не отправляем одновременно десятки запросов.
+# Это предотвращает server disconnect / rate-limit / перегрузку.
+MAX_CONCURRENT_REQUESTS = 4
+
+REQUEST_TIMEOUT = 25.0
+
+MAX_RETRIES = 3
+
+CACHE_TTL_SECONDS = 12.0
+
+DEFAULT_INTERVAL = "1min"
+DEFAULT_OUTPUTSIZE = 500
 
 
 class MarketClient:
     """
-    Быстрый клиент Twelve Data.
+    Клиент Twelve Data.
 
-    Поддерживает:
-
+    Основные задачи:
     - получение свечей;
-    - получение текущей цены;
-    - force_refresh;
-    - получение цены закрытия на момент expiry;
-    - закрытие HTTP-клиента;
-    - TTL-кэш;
-    - параллельные запросы разных пар.
-
-    В отличие от старой версии здесь НЕТ глобального
-    asyncio.Lock на каждый HTTP-запрос.
-
-    Поэтому при сканировании нескольких пар запросы
-    могут выполняться одновременно.
+    - получение цен;
+    - небольшой TTL cache;
+    - ограничение параллельных HTTP-запросов;
+    - retry временных сетевых ошибок;
+    - batch-запросы по нескольким парам.
     """
 
-    def __init__(self) -> None:
-        self.base_url = (
-            TWELVE_DATA_BASE_URL.rstrip("/")
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        max_concurrent_requests: int = MAX_CONCURRENT_REQUESTS,
+    ) -> None:
+        self.api_key = (
+            api_key
+            or TWELVE_DATA_API_KEY
         )
 
-        self.timeout = httpx.Timeout(
-            TWELVE_DATA_TIMEOUT
+        if not self.api_key:
+            raise RuntimeError(
+                "TWELVE_DATA_API_KEY is not configured"
+            )
+
+        self._client: Optional[httpx.AsyncClient] = None
+
+        self._semaphore = asyncio.Semaphore(
+            max(1, int(max_concurrent_requests))
         )
 
-        # HTTP-клиент создаётся лениво.
-        self._client: httpx.AsyncClient | None = None
-
-        # Небольшой lock используется только для безопасного
-        # создания/замены HTTP-клиента.
-        #
-        # Он НЕ удерживается во время HTTP-запроса.
-        self._client_lock = asyncio.Lock()
-
-        # Кэш:
-        #
-        # (symbol, interval, outputsize)
-        #
-        # -> (monotonic timestamp, dataframe)
-        self._cache: dict[
-            tuple[str, str, int],
+        self._cache: Dict[
+            str,
             tuple[float, pd.DataFrame],
         ] = {}
 
-        # Защита кэша от одновременной записи.
         self._cache_lock = asyncio.Lock()
 
-    # ========================================================
-    # HTTP CLIENT
-    # ========================================================
+        self._client_lock = asyncio.Lock()
 
-    async def _get_http_client(
-        self,
-    ) -> httpx.AsyncClient:
-        """
-        Возвращает общий AsyncClient.
-
-        Lock удерживается только на момент проверки/
-        создания клиента.
-
-        Сам HTTP-запрос выполняется БЕЗ lock.
-        """
-
-        if (
-            self._client is not None
-            and not self._client.is_closed
-        ):
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self._client is not None:
             return self._client
 
         async with self._client_lock:
-            if (
-                self._client is None
-                or self._client.is_closed
-            ):
+            if self._client is None:
                 self._client = httpx.AsyncClient(
-                    timeout=self.timeout,
-                    limits=httpx.Limits(
-                        max_connections=30,
-                        max_keepalive_connections=20,
+                    timeout=httpx.Timeout(
+                        connect=10.0,
+                        read=REQUEST_TIMEOUT,
+                        write=10.0,
+                        pool=10.0,
                     ),
+                    limits=httpx.Limits(
+                        max_connections=MAX_CONCURRENT_REQUESTS,
+                        max_keepalive_connections=MAX_CONCURRENT_REQUESTS,
+                        keepalive_expiry=20.0,
+                    ),
+                    headers={
+                        "User-Agent": "TEYZOO-Signal-Bot/2.0",
+                        "Accept": "application/json",
+                    },
+                    follow_redirects=True,
                 )
 
-            return self._client
+        return self._client
 
-    # ========================================================
-    # REQUEST
-    # ========================================================
+    @staticmethod
+    def normalize_symbol(symbol: str) -> str:
+        """
+        Нормализует:
+        EUR/USD
+        EURUSD
+        EUR-USD
+        """
+        value = str(symbol).strip().upper()
+
+        value = value.replace("-", "/")
+        value = value.replace("_", "/")
+
+        if "/" not in value and len(value) == 6:
+            value = f"{value[:3]}/{value[3:]}"
+
+        return value
+
+    @staticmethod
+    def _cache_key(
+        symbol: str,
+        interval: str,
+        outputsize: int,
+    ) -> str:
+        return (
+            f"{symbol.upper()}|"
+            f"{interval}|"
+            f"{int(outputsize)}"
+        )
+
+    async def _get_cached(
+        self,
+        key: str,
+    ) -> Optional[pd.DataFrame]:
+        async with self._cache_lock:
+            item = self._cache.get(key)
+
+            if item is None:
+                return None
+
+            timestamp, dataframe = item
+
+            if (
+                time.monotonic() - timestamp
+                > CACHE_TTL_SECONDS
+            ):
+                self._cache.pop(key, None)
+                return None
+
+            return dataframe.copy()
+
+    async def _set_cached(
+        self,
+        key: str,
+        dataframe: pd.DataFrame,
+    ) -> None:
+        async with self._cache_lock:
+            self._cache[key] = (
+                time.monotonic(),
+                dataframe.copy(),
+            )
+
+    @staticmethod
+    def _is_retryable_exception(
+        exc: Exception,
+    ) -> bool:
+        return isinstance(
+            exc,
+            (
+                httpx.TimeoutException,
+                httpx.ConnectError,
+                httpx.ReadError,
+                httpx.RemoteProtocolError,
+                httpx.NetworkError,
+                httpx.PoolTimeout,
+            ),
+        )
+
+    @staticmethod
+    def _parse_retry_after(
+        response: httpx.Response,
+    ) -> Optional[float]:
+        value = response.headers.get("Retry-After")
+
+        if not value:
+            return None
+
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return None
 
     async def _request(
         self,
-        params: dict[str, Any],
-    ) -> dict[str, Any]:
-        """
-        Выполняет запрос к Twelve Data.
+        symbol: str,
+        interval: str,
+        outputsize: int,
+    ) -> Dict[str, Any]:
 
-        Запросы разных пар НЕ блокируют друг друга.
-        """
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "outputsize": int(outputsize),
+            "apikey": self.api_key,
+            "timezone": "UTC",
+        }
 
-        request_params = dict(
-            params
-        )
+        client = await self._get_client()
 
-        request_params["apikey"] = (
-            TWELVE_DATA_API_KEY
-        )
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                async with self._semaphore:
+                    response = await client.get(
+                        TWELVE_DATA_URL,
+                        params=params,
+                    )
 
-        client = await self._get_http_client()
+                status = response.status_code
 
-        try:
-            response = await client.get(
-                f"{self.base_url}/time_series",
-                params=request_params,
-            )
+                if status == 429:
+                    retry_after = (
+                        self._parse_retry_after(response)
+                    )
 
-            response.raise_for_status()
+                    if retry_after is None:
+                        retry_after = float(
+                            min(8, 2 ** attempt)
+                        )
 
-        except httpx.HTTPError as exc:
-            raise MarketAPIError(
-                f"Twelve Data HTTP error: {exc}"
-            ) from exc
+                    logger.warning(
+                        "%s | Twelve Data rate limit "
+                        "(attempt %s/%s), retry in %.1fs",
+                        symbol,
+                        attempt,
+                        MAX_RETRIES,
+                        retry_after,
+                    )
 
-        try:
-            data = response.json()
+                    if attempt < MAX_RETRIES:
+                        await asyncio.sleep(
+                            retry_after
+                        )
+                        continue
 
-        except ValueError as exc:
-            raise MarketAPIError(
-                "Twelve Data returned invalid JSON"
-            ) from exc
+                    response.raise_for_status()
 
-        if data.get("status") == "error":
-            raise MarketAPIError(
-                data.get(
-                    "message",
-                    "Twelve Data API error",
+                if 500 <= status <= 599:
+                    logger.warning(
+                        "%s | Twelve Data HTTP %s "
+                        "(attempt %s/%s)",
+                        symbol,
+                        status,
+                        attempt,
+                        MAX_RETRIES,
+                    )
+
+                    if attempt < MAX_RETRIES:
+                        await asyncio.sleep(
+                            min(8.0, 2 ** attempt)
+                        )
+                        continue
+
+                    response.raise_for_status()
+
+                response.raise_for_status()
+
+                payload = response.json()
+
+                if not isinstance(payload, dict):
+                    raise RuntimeError(
+                        "Twelve Data returned invalid JSON"
+                    )
+
+                if payload.get("status") == "error":
+                    message = payload.get(
+                        "message",
+                        "Unknown Twelve Data error",
+                    )
+
+                    code = payload.get("code")
+
+                    # Ошибка лимита может возвращаться
+                    # с HTTP 200.
+                    if (
+                        code in {429, "429"}
+                        or "rate limit" in str(message).lower()
+                    ):
+                        if attempt < MAX_RETRIES:
+                            await asyncio.sleep(
+                                min(8.0, 2 ** attempt)
+                            )
+                            continue
+
+                    raise RuntimeError(
+                        f"Twelve Data error: {message}"
+                    )
+
+                return payload
+
+            except asyncio.CancelledError:
+                raise
+
+            except Exception as exc:
+                if (
+                    self._is_retryable_exception(exc)
+                    and attempt < MAX_RETRIES
+                ):
+                    delay = min(
+                        8.0,
+                        2 ** attempt,
+                    )
+
+                    logger.warning(
+                        "%s | temporary Twelve Data "
+                        "network error: %s; retry in %.1fs "
+                        "(attempt %s/%s)",
+                        symbol,
+                        type(exc).__name__,
+                        delay,
+                        attempt,
+                        MAX_RETRIES,
+                    )
+
+                    await asyncio.sleep(delay)
+                    continue
+
+                logger.error(
+                    "%s | Twelve Data request failed: %s",
+                    symbol,
+                    exc,
                 )
+
+                raise
+
+        raise RuntimeError(
+            f"{symbol}: Twelve Data request failed"
+        )
+
+    @staticmethod
+    def _payload_to_dataframe(
+        payload: Dict[str, Any],
+        symbol: str,
+    ) -> pd.DataFrame:
+        values = payload.get("values")
+
+        if not values:
+            raise ValueError(
+                f"{symbol}: Twelve Data returned no candle data"
             )
 
-        if "values" not in data:
-            raise MarketAPIError(
-                "No market values returned"
+        rows: List[Dict[str, Any]] = []
+
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+
+            rows.append(
+                {
+                    "datetime": item.get("datetime"),
+                    "open": item.get("open"),
+                    "high": item.get("high"),
+                    "low": item.get("low"),
+                    "close": item.get("close"),
+                    "volume": item.get(
+                        "volume",
+                        0,
+                    ),
+                }
             )
 
-        return data
+        if not rows:
+            raise ValueError(
+                f"{symbol}: no valid candle rows"
+            )
 
-    # ========================================================
-    # CANDLES
-    # ========================================================
+        dataframe = pd.DataFrame(rows)
+
+        dataframe["datetime"] = pd.to_datetime(
+            dataframe["datetime"],
+            utc=True,
+            errors="coerce",
+        )
+
+        numeric_columns = [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+        ]
+
+        for column in numeric_columns:
+            dataframe[column] = pd.to_numeric(
+                dataframe[column],
+                errors="coerce",
+            )
+
+        dataframe = dataframe.dropna(
+            subset=[
+                "datetime",
+                "open",
+                "high",
+                "low",
+                "close",
+            ]
+        )
+
+        dataframe = (
+            dataframe
+            .drop_duplicates(
+                subset=["datetime"],
+                keep="last",
+            )
+            .sort_values("datetime")
+            .reset_index(drop=True)
+        )
+
+        if dataframe.empty:
+            raise ValueError(
+                f"{symbol}: dataframe is empty"
+            )
+
+        return dataframe
 
     async def get_candles(
         self,
         symbol: str,
-        interval: str = "1min",
-        outputsize: int = MAX_CANDLES,
+        interval: str = DEFAULT_INTERVAL,
+        outputsize: int = DEFAULT_OUTPUTSIZE,
         force_refresh: bool = False,
-        **kwargs: Any,
     ) -> pd.DataFrame:
-        """
-        Получает свечи.
 
-        force_refresh=True полностью игнорирует кэш.
+        symbol = self.normalize_symbol(symbol)
 
-        **kwargs сохранён для совместимости со старыми
-        вызовами проекта.
-        """
-
-        try:
-            outputsize = int(
-                outputsize
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-            outputsize = MAX_CANDLES
-
-        outputsize = max(
-            1,
-            min(
-                MAX_CANDLES,
-                outputsize,
-            ),
-        )
-
-        cache_key = (
+        key = self._cache_key(
             symbol,
             interval,
             outputsize,
         )
 
-        now = time.monotonic()
-
-        # ----------------------------------------------------
-        # CACHE
-        # ----------------------------------------------------
-
         if not force_refresh:
-            cached = self._cache.get(
-                cache_key
-            )
+            cached = await self._get_cached(key)
 
             if cached is not None:
-                cached_at, cached_df = cached
+                return cached
 
-                if (
-                    TWELVE_DATA_CACHE_SECONDS > 0
-                    and (
-                        now - cached_at
-                    )
-                    < TWELVE_DATA_CACHE_SECONDS
-                ):
-                    return cached_df.copy()
-
-        # ----------------------------------------------------
-        # REQUEST
-        # ----------------------------------------------------
-
-        data = await self._request(
-            {
-                "symbol": symbol,
-                "interval": interval,
-                "outputsize": outputsize,
-                "timezone": "UTC",
-                "format": "JSON",
-            }
+        payload = await self._request(
+            symbol=symbol,
+            interval=interval,
+            outputsize=outputsize,
         )
 
-        values = data.get(
-            "values",
-            [],
+        dataframe = self._payload_to_dataframe(
+            payload,
+            symbol,
         )
 
-        if not values:
-            raise MarketAPIError(
-                f"No candles for {symbol}"
-            )
-
-        rows: list[
-            dict[str, Any]
-        ] = []
-
-        for item in values:
-            try:
-                rows.append(
-                    {
-                        "datetime": pd.to_datetime(
-                            item["datetime"],
-                            utc=True,
-                        ),
-                        "open": float(
-                            item["open"]
-                        ),
-                        "high": float(
-                            item["high"]
-                        ),
-                        "low": float(
-                            item["low"]
-                        ),
-                        "close": float(
-                            item["close"]
-                        ),
-                        "volume": float(
-                            item.get(
-                                "volume",
-                                0,
-                            )
-                            or 0
-                        ),
-                    }
-                )
-
-            except (
-                KeyError,
-                TypeError,
-                ValueError,
-            ):
-                # Битую свечу пропускаем.
-                continue
-
-        df = pd.DataFrame(
-            rows
+        await self._set_cached(
+            key,
+            dataframe,
         )
 
-        if df.empty:
-            raise MarketAPIError(
-                f"No valid candles for {symbol}"
-            )
-
-        # ----------------------------------------------------
-        # SORT
-        # ----------------------------------------------------
-
-        df = (
-            df.sort_values(
-                "datetime"
-            )
-            .drop_duplicates(
-                subset=["datetime"],
-                keep="last",
-            )
-            .reset_index(
-                drop=True
-            )
+        logger.info(
+            "%s | Twelve Data OK | candles=%s",
+            symbol,
+            len(dataframe),
         )
 
-        # ----------------------------------------------------
-        # CACHE
-        # ----------------------------------------------------
-
-        if TWELVE_DATA_CACHE_SECONDS > 0:
-            async with self._cache_lock:
-                self._cache[
-                    cache_key
-                ] = (
-                    time.monotonic(),
-                    df.copy(),
-                )
-
-        return df
-
-    # ========================================================
-    # FAST PARALLEL CANDLES
-    # ========================================================
+        return dataframe.copy()
 
     async def get_candles_many(
         self,
-        symbols: list[str],
-        interval: str = "1min",
-        outputsize: int = MAX_CANDLES,
+        symbols: Iterable[str],
+        interval: str = DEFAULT_INTERVAL,
+        outputsize: int = DEFAULT_OUTPUTSIZE,
         force_refresh: bool = False,
-    ) -> dict[str, pd.DataFrame]:
-        """
-        Получает свечи сразу для нескольких пар.
-
-        Все запросы выполняются параллельно.
-
-        Ошибка одной пары НЕ ломает остальные.
-        """
+    ) -> Dict[str, pd.DataFrame]:
 
         unique_symbols = list(
             dict.fromkeys(
-                str(symbol)
+                self.normalize_symbol(symbol)
                 for symbol in symbols
-                if symbol
             )
         )
 
-        if not unique_symbols:
-            return {}
-
-        async def fetch(
+        async def load(
             symbol: str,
-        ) -> tuple[
-            str,
-            pd.DataFrame | None,
-        ]:
+        ):
             try:
-                df = await self.get_candles(
+                dataframe = await self.get_candles(
                     symbol=symbol,
                     interval=interval,
                     outputsize=outputsize,
                     force_refresh=force_refresh,
                 )
 
-                return symbol, df
+                return symbol, dataframe
 
-            except Exception:
+            except asyncio.CancelledError:
+                raise
+
+            except Exception as exc:
+                logger.error(
+                    "%s | failed to load candles: %s",
+                    symbol,
+                    exc,
+                )
                 return symbol, None
 
         results = await asyncio.gather(
             *(
-                fetch(symbol)
+                load(symbol)
                 for symbol in unique_symbols
             ),
             return_exceptions=False,
         )
 
-        return {
-            symbol: df
-            for symbol, df in results
-            if df is not None
-        }
+        output: Dict[str, pd.DataFrame] = {}
 
-    # ========================================================
-    # PRICE
-    # ========================================================
+        for symbol, dataframe in results:
+            if dataframe is not None:
+                output[symbol] = dataframe
+
+        return output
 
     async def get_price(
         self,
         symbol: str,
-    ) -> float:
-        """
-        Получает последнюю доступную цену.
+    ) -> Optional[float]:
 
-        Используется отдельный короткий запрос свечи,
-        как и в предыдущей реализации.
-        """
+        symbol = self.normalize_symbol(symbol)
 
-        df = await self.get_candles(
-            symbol=symbol,
-            interval="1min",
-            outputsize=1,
-            force_refresh=True,
-        )
+        try:
+            dataframe = await self.get_candles(
+                symbol=symbol,
+                interval=DEFAULT_INTERVAL,
+                outputsize=1,
+                force_refresh=True,
+            )
 
-        return float(
-            df.iloc[-1]["close"]
-        )
+            if dataframe.empty:
+                return None
 
-    # ========================================================
-    # PARALLEL PRICES
-    # ========================================================
+            return float(
+                dataframe.iloc[-1]["close"]
+            )
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+            logger.error(
+                "%s | failed to get price: %s",
+                symbol,
+                exc,
+            )
+            return None
 
     async def get_prices_many(
         self,
-        symbols: list[str],
-    ) -> dict[str, float]:
-        """
-        Получает цены нескольких пар параллельно.
-        """
+        symbols: Iterable[str],
+    ) -> Dict[str, float]:
 
         unique_symbols = list(
             dict.fromkeys(
-                str(symbol)
+                self.normalize_symbol(symbol)
                 for symbol in symbols
-                if symbol
             )
         )
 
-        if not unique_symbols:
-            return {}
-
-        async def fetch(
+        async def load(
             symbol: str,
-        ) -> tuple[
-            str,
-            float | None,
-        ]:
-            try:
-                return (
-                    symbol,
-                    await self.get_price(
-                        symbol
-                    ),
-                )
-
-            except Exception:
-                return (
-                    symbol,
-                    None,
-                )
+        ):
+            return symbol, await self.get_price(symbol)
 
         results = await asyncio.gather(
             *(
-                fetch(symbol)
+                load(symbol)
                 for symbol in unique_symbols
             ),
             return_exceptions=False,
         )
 
-        return {
-            symbol: price
-            for symbol, price in results
-            if price is not None
-        }
+        output: Dict[str, float] = {}
 
-    # ========================================================
-    # EXPIRY CLOSE
-    # ========================================================
+        for symbol, price in results:
+            if price is not None:
+                output[symbol] = price
 
-    def get_close_for_expiry(
-        self,
-        candles: pd.DataFrame,
-        expiry,
-    ) -> float | None:
-        """
-        Находит цену закрытия свечи,
-        соответствующей времени экспирации.
+        return output
 
-        Логика:
-
-        1. приводим datetime к UTC;
-        2. ищем свечу timestamp <= expiry;
-        3. если её нет — ближайшую после expiry;
-        4. возвращаем close.
-        """
-
-        if (
-            candles is None
-            or candles.empty
-        ):
-            return None
-
-        if "datetime" not in candles.columns:
-            return None
-
-        if "close" not in candles.columns:
-            return None
-
-        try:
-            expiry_dt = pd.to_datetime(
-                expiry,
-                utc=True,
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-            return None
-
-        df = candles.copy()
-
-        try:
-            df["datetime"] = pd.to_datetime(
-                df["datetime"],
-                utc=True,
-            )
-
-        except Exception:
-            return None
-
-        df = (
-            df.dropna(
-                subset=[
-                    "datetime",
-                    "close",
-                ]
-            )
-            .sort_values(
-                "datetime"
-            )
-            .reset_index(
-                drop=True
-            )
-        )
-
-        if df.empty:
-            return None
-
-        # ----------------------------------------------------
-        # Идеальная свеча.
-        # ----------------------------------------------------
-
-        before_or_equal = df[
-            df["datetime"] <= expiry_dt
-        ]
-
-        if not before_or_equal.empty:
-            row = before_or_equal.iloc[-1]
-
-            try:
-                return float(
-                    row["close"]
-                )
-
-            except (
-                TypeError,
-                ValueError,
-            ):
-                return None
-
-        # ----------------------------------------------------
-        # Если timestamp раньше всех свечей,
-        # берём ближайшую доступную.
-        # ----------------------------------------------------
-
-        after = df[
-            df["datetime"] >= expiry_dt
-        ]
-
-        if not after.empty:
-            try:
-                return float(
-                    after.iloc[0]["close"]
-                )
-
-            except (
-                TypeError,
-                ValueError,
-            ):
-                return None
-
-        return None
-
-    # ========================================================
-    # CACHE CONTROL
-    # ========================================================
-
-    def clear_cache(self) -> None:
-        self._cache.clear()
-
-    # ========================================================
-    # CLOSE
-    # ========================================================
+    async def clear_cache(self) -> None:
+        async with self._cache_lock:
+            self._cache.clear()
 
     async def close(self) -> None:
-        """
-        Закрывает HTTP-клиент.
-        """
+        client = self._client
+        self._client = None
 
-        async with self._client_lock:
-            if self._client is not None:
-                if not self._client.is_closed:
-                    await self._client.aclose()
-
-                self._client = None
-
-        self._cache.clear()
+        if client is not None:
+            try:
+                await client.aclose()
+            except Exception:
+                logger.exception(
+                    "Failed to close MarketClient HTTP client"
+                )
 
 
-# ============================================================
-# GLOBAL CLIENT
-# ============================================================
-
-market_client = MarketClient()
+# Singleton для совместимости с остальным проектом.
+market = MarketClient()
