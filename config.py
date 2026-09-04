@@ -274,6 +274,24 @@ TWELVE_DATA_CACHE_SECONDS: Final[int] = max(
 
 
 # ---------------------------------------------------------------------------
+# Scanner candle limit
+# ---------------------------------------------------------------------------
+
+# Maximum number of candles that SignalScanner may pass
+# into the analysis pipeline.
+#
+# Kept separate from TWELVE_DATA_MAX_CANDLES because
+# SignalScanner imports MAX_CANDLES directly.
+MAX_CANDLES: Final[int] = max(
+    50,
+    _get_int(
+        "MAX_CANDLES",
+        200,
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
 # Automatic signals
 # ---------------------------------------------------------------------------
 
@@ -597,7 +615,6 @@ USER_BLACKLISTED: Final[str] = "blacklisted"
 
 
 # Backward-compatible access aliases.
-# Existing services.py uses ACCESS_* names.
 ACCESS_PENDING: Final[str] = USER_PENDING
 ACCESS_APPROVED: Final[str] = USER_APPROVED
 ACCESS_REJECTED: Final[str] = USER_REJECTED
@@ -695,6 +712,11 @@ def validate_config() -> None:
     if TWELVE_DATA_MIN_CANDLES > TWELVE_DATA_MAX_CANDLES:
         raise RuntimeError(
             "TWELVE_DATA_MIN_CANDLES cannot exceed TWELVE_DATA_MAX_CANDLES"
+        )
+
+    if MAX_CANDLES < TWELVE_DATA_MIN_CANDLES:
+        raise RuntimeError(
+            "MAX_CANDLES cannot be below TWELVE_DATA_MIN_CANDLES"
         )
 
 
