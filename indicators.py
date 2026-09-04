@@ -19,9 +19,7 @@ from config import (
 )
 
 
-def calculate_indicators(
-    df: pd.DataFrame,
-) -> pd.DataFrame:
+def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     result = df.copy()
 
     required = {
@@ -68,14 +66,21 @@ def calculate_indicators(
         ]
     ).copy()
 
-    result = result.sort_values(
-        "datetime"
-    ).reset_index(drop=True)
+    result = (
+        result
+        .sort_values("datetime")
+        .drop_duplicates(
+            subset=["datetime"],
+            keep="last",
+        )
+        .reset_index(drop=True)
+    )
 
     close = result["close"]
     high = result["high"]
     low = result["low"]
 
+    # EMA
     result["ema_fast"] = close.ewm(
         span=EMA_FAST,
         adjust=False,
@@ -94,6 +99,7 @@ def calculate_indicators(
         min_periods=EMA_TREND,
     ).mean()
 
+    # RSI
     delta = close.diff()
 
     gain = delta.clip(lower=0)
@@ -120,14 +126,9 @@ def calculate_indicators(
         100 / (1 + rs)
     )
 
-    result["rsi"] = result["rsi"].fillna(
-        np.where(
-            avg_loss == 0,
-            100,
-            50,
-        )
-    )
+    result["rsi"] = result["rsi"].fillna(50.0)
 
+    # MACD
     ema_macd_fast = close.ewm(
         span=MACD_FAST,
         adjust=False,
@@ -158,6 +159,7 @@ def calculate_indicators(
         - result["macd_signal"]
     )
 
+    # Bollinger Bands
     result["bollinger_middle"] = close.rolling(
         BOLLINGER_PERIOD,
         min_periods=BOLLINGER_PERIOD,
@@ -178,6 +180,7 @@ def calculate_indicators(
         - std * BOLLINGER_STD
     )
 
+    # Stochastic
     lowest_low = low.rolling(
         STOCHASTIC_PERIOD,
         min_periods=STOCHASTIC_PERIOD,
@@ -212,6 +215,7 @@ def calculate_indicators(
         .mean()
     )
 
+    # ATR
     previous_close = close.shift(1)
 
     tr1 = high - low
@@ -229,6 +233,7 @@ def calculate_indicators(
         min_periods=ATR_PERIOD,
     ).mean()
 
+    # Candle structure
     result["candle_body"] = (
         result["close"]
         - result["open"]
@@ -236,15 +241,11 @@ def calculate_indicators(
 
     result["upper_wick"] = (
         result["high"]
-        - result[
-            ["open", "close"]
-        ].max(axis=1)
+        - result[["open", "close"]].max(axis=1)
     )
 
     result["lower_wick"] = (
-        result[
-            ["open", "close"]
-        ].min(axis=1)
+        result[["open", "close"]].min(axis=1)
         - result["low"]
     )
 
@@ -267,12 +268,33 @@ def latest_indicators(
     if df.empty:
         return {}
 
-    row = df.iloc[-1]
+    # Если индикаторы ещё не были рассчитаны —
+    # рассчитываем их автоматически.
+    indicator_columns = {
+        "ema_fast",
+        "ema_slow",
+        "ema_trend",
+        "rsi",
+        "macd",
+        "macd_signal",
+        "macd_histogram",
+        "bollinger_middle",
+        "stochastic_k",
+        "stochastic_d",
+        "atr",
+    }
 
-    values: dict[
-        str,
-        float | bool | None,
-    ] = {}
+    if not indicator_columns.issubset(df.columns):
+        prepared = calculate_indicators(df)
+    else:
+        prepared = df
+
+    if prepared.empty:
+        return {}
+
+    row = prepared.iloc[-1]
+
+    values: dict[str, float | bool | None] = {}
 
     columns = (
         "ema_fast",
@@ -298,10 +320,10 @@ def latest_indicators(
     for column in columns:
         value = row.get(column)
 
-        if isinstance(value, (
-            bool,
-            np.bool_,
-        )):
+        if isinstance(
+            value,
+            (bool, np.bool_),
+        ):
             values[column] = bool(value)
             continue
 
@@ -311,7 +333,26 @@ def latest_indicators(
 
         try:
             values[column] = float(value)
-        except (TypeError, ValueError):
+        except (
+            TypeError,
+            ValueError,
+        ):
             values[column] = None
+
+    # Совместимость со старым SignalEngine.
+    close_value = row.get("close")
+
+    if close_value is not None and not pd.isna(close_value):
+        values["price"] = float(close_value)
+
+    bb_middle = values.get(
+        "bollinger_middle"
+    )
+
+    values["bb_middle"] = (
+        float(bb_middle)
+        if bb_middle is not None
+        else None
+    )
 
     return values
