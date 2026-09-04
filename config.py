@@ -102,6 +102,10 @@ def _get_int_list(name: str) -> tuple[int, ...]:
     return tuple(dict.fromkeys(result))
 
 
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+
 BOT_TOKEN: Final[str] = _get_required("BOT_TOKEN")
 
 DATABASE_URL: Final[str] = _get_required("DATABASE_URL")
@@ -110,7 +114,6 @@ TWELVE_DATA_API_KEY: Final[str] = _get_required(
     "TWELVE_DATA_API_KEY"
 )
 
-
 ADMIN_IDS: Final[tuple[int, ...]] = _get_int_list(
     "ADMIN_IDS"
 )
@@ -118,7 +121,6 @@ ADMIN_IDS: Final[tuple[int, ...]] = _get_int_list(
 OWNER_IDS: Final[tuple[int, ...]] = (
     _get_int_list("OWNER_IDS") or ADMIN_IDS
 )
-
 
 HOST: Final[str] = (
     _get("HOST", "0.0.0.0")
@@ -140,6 +142,10 @@ TIMEZONE: Final[str] = (
     or "Europe/Moscow"
 )
 
+
+# ---------------------------------------------------------------------------
+# Signal requirements
+# ---------------------------------------------------------------------------
 
 MIN_SIGNAL_WINRATE: Final[float] = max(
     75.0,
@@ -174,6 +180,10 @@ MIN_SIGNAL_CONFIRMATIONS: Final[int] = max(
 )
 
 
+# ---------------------------------------------------------------------------
+# Expiry
+# ---------------------------------------------------------------------------
+
 MIN_EXPIRY_MINUTES: Final[int] = max(
     1,
     _get_int(
@@ -205,6 +215,10 @@ DEFAULT_EXPIRY_MINUTES: Final[int] = min(
 )
 
 
+# ---------------------------------------------------------------------------
+# Market / Twelve Data
+# ---------------------------------------------------------------------------
+
 MARKET_INTERVAL: Final[str] = (
     _get(
         "MARKET_INTERVAL",
@@ -212,7 +226,6 @@ MARKET_INTERVAL: Final[str] = (
     )
     or "1min"
 )
-
 
 TWELVE_DATA_BASE_URL: Final[str] = (
     _get(
@@ -260,6 +273,10 @@ TWELVE_DATA_CACHE_SECONDS: Final[int] = max(
 )
 
 
+# ---------------------------------------------------------------------------
+# Automatic signals
+# ---------------------------------------------------------------------------
+
 AUTO_SIGNAL_ENABLED: Final[bool] = _get_bool(
     "AUTO_SIGNAL_ENABLED",
     True,
@@ -290,6 +307,10 @@ SIGNAL_DEDUPLICATION_MINUTES: Final[int] = max(
 )
 
 
+# ---------------------------------------------------------------------------
+# Result checking
+# ---------------------------------------------------------------------------
+
 RESULT_CHECK_INTERVAL_SECONDS: Final[int] = max(
     5,
     _get_int(
@@ -306,6 +327,10 @@ RESULT_PRICE_TOLERANCE_SECONDS: Final[int] = max(
     ),
 )
 
+
+# ---------------------------------------------------------------------------
+# Technical indicators
+# ---------------------------------------------------------------------------
 
 EMA_FAST: Final[int] = max(
     2,
@@ -409,6 +434,10 @@ ATR_PERIOD: Final[int] = max(
 )
 
 
+# ---------------------------------------------------------------------------
+# Charts
+# ---------------------------------------------------------------------------
+
 CHART_ENABLED: Final[bool] = _get_bool(
     "CHART_ENABLED",
     True,
@@ -439,6 +468,10 @@ CHART_DPI: Final[int] = max(
 )
 
 
+# ---------------------------------------------------------------------------
+# Candle filter
+# ---------------------------------------------------------------------------
+
 CANDLE_FILTER_ENABLED: Final[bool] = _get_bool(
     "CANDLE_FILTER_ENABLED",
     False,
@@ -460,6 +493,10 @@ CANDLE_FILTER_DURATION_MINUTES: Final[int] = max(
     ),
 )
 
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
 
 DB_POOL_SIZE: Final[int] = max(
     1,
@@ -494,6 +531,10 @@ DB_POOL_RECYCLE: Final[int] = max(
 )
 
 
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
 LOG_LEVEL: Final[str] = (
     _get(
         "LOG_LEVEL",
@@ -502,6 +543,10 @@ LOG_LEVEL: Final[str] = (
     or "INFO"
 ).upper()
 
+
+# ---------------------------------------------------------------------------
+# Currency pairs
+# ---------------------------------------------------------------------------
 
 NORMAL_PAIRS: Final[tuple[str, ...]] = (
     "EUR/USD",
@@ -522,6 +567,10 @@ NORMAL_PAIRS: Final[tuple[str, ...]] = (
 OTC_PAIRS: Final[tuple[str, ...]] = ()
 
 
+# ---------------------------------------------------------------------------
+# Signal results
+# ---------------------------------------------------------------------------
+
 RESULT_PENDING: Final[str] = "pending"
 RESULT_WIN: Final[str] = "win"
 RESULT_LOSS: Final[str] = "loss"
@@ -529,33 +578,60 @@ RESULT_DRAW: Final[str] = "draw"
 RESULT_CANCELLED: Final[str] = "cancelled"
 
 
+# Backward-compatible signal-result aliases.
+SIGNAL_RESULT_PENDING: Final[str] = RESULT_PENDING
+SIGNAL_RESULT_WIN: Final[str] = RESULT_WIN
+SIGNAL_RESULT_LOSS: Final[str] = RESULT_LOSS
+SIGNAL_RESULT_DRAW: Final[str] = RESULT_DRAW
+SIGNAL_RESULT_CANCELLED: Final[str] = RESULT_CANCELLED
+
+
+# ---------------------------------------------------------------------------
+# User access statuses
+# ---------------------------------------------------------------------------
+
 USER_PENDING: Final[str] = "pending"
 USER_APPROVED: Final[str] = "approved"
 USER_REJECTED: Final[str] = "rejected"
 USER_BLACKLISTED: Final[str] = "blacklisted"
 
 
-# Backward-compatible aliases.
-# These names are used by services.py.
-# USER_* remain the canonical status names.
+# Backward-compatible access aliases.
+# Existing services.py uses ACCESS_* names.
 ACCESS_PENDING: Final[str] = USER_PENDING
 ACCESS_APPROVED: Final[str] = USER_APPROVED
 ACCESS_REJECTED: Final[str] = USER_REJECTED
 ACCESS_BLACKLISTED: Final[str] = USER_BLACKLISTED
 
 
+# ---------------------------------------------------------------------------
+# Market types
+# ---------------------------------------------------------------------------
+
 MARKET_REGULAR: Final[str] = "regular"
 MARKET_OTC: Final[str] = "otc"
 
+
+# ---------------------------------------------------------------------------
+# Signal sources
+# ---------------------------------------------------------------------------
 
 SIGNAL_SOURCE_AUTO: Final[str] = "auto"
 SIGNAL_SOURCE_MANUAL: Final[str] = "manual"
 SIGNAL_SOURCE_ANALYSIS: Final[str] = "analysis"
 
 
+# ---------------------------------------------------------------------------
+# Signal directions
+# ---------------------------------------------------------------------------
+
 DIRECTION_UP: Final[str] = "UP"
 DIRECTION_DOWN: Final[str] = "DOWN"
 
+
+# ---------------------------------------------------------------------------
+# Config snapshot
+# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class ConfigSnapshot:
@@ -570,6 +646,10 @@ class ConfigSnapshot:
     min_signal_quality: float
     min_signal_confirmations: int
 
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
 
 def validate_config() -> None:
     if not BOT_TOKEN:
@@ -620,6 +700,10 @@ def validate_config() -> None:
 
 validate_config()
 
+
+# ---------------------------------------------------------------------------
+# Global config snapshot
+# ---------------------------------------------------------------------------
 
 CONFIG = ConfigSnapshot(
     bot_token=BOT_TOKEN,
