@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -23,263 +23,189 @@ class BacktestResult:
 
     @property
     def winrate(self) -> float:
-
         decisive = self.decisive_trades
 
         if decisive <= 0:
             return 0.0
 
-        return (
-            self.wins
-            / decisive
-            * 100.0
-        )
+        return self.wins / decisive * 100.0
 
     @property
     def reliable(self) -> bool:
         return self.decisive_trades >= 10
 
 
-def _safe_float(
-    value,
+def _series(
+    df: pd.DataFrame,
+    column: str,
     default: float = 0.0,
-) -> float:
+) -> pd.Series:
 
-    try:
+    if column not in df.columns:
+        return pd.Series(
+            default,
+            index=df.index,
+            dtype=float,
+        )
 
-        if pd.isna(value):
-            return default
-
-        return float(value)
-
-    except (
-        TypeError,
-        ValueError,
-    ):
-        return default
+    return (
+        pd.to_numeric(
+            df[column],
+            errors="coerce",
+        )
+        .fillna(default)
+    )
 
 
-def _evaluate_row(
-    row: pd.Series,
-) -> Tuple[
-    Optional[str],
-    int,
-    float,
-    List[str],
-]:
+def _bool_series(
+    df: pd.DataFrame,
+    column: str,
+) -> pd.Series:
 
-    up_score = 0.0
-    down_score = 0.0
+    if column not in df.columns:
+        return pd.Series(
+            False,
+            index=df.index,
+            dtype=bool,
+        )
 
+    return (
+        df[column]
+        .fillna(False)
+        .astype(bool)
+    )
+
+
+def evaluate_row(row: pd.Series):
+    up = 0.0
+    down = 0.0
     confirmations = 0
+    reasons = []
 
-    reasons_up: List[str] = []
-    reasons_down: List[str] = []
-
-    ema_fast = _safe_float(
-        row.get("ema_fast")
-    )
-
-    ema_slow = _safe_float(
-        row.get("ema_slow")
-    )
+    ema_fast = float(row.get("ema_fast", 0) or 0)
+    ema_slow = float(row.get("ema_slow", 0) or 0)
 
     if ema_fast > ema_slow:
-
-        up_score += 15
+        up += 15
         confirmations += 1
-        reasons_up.append("EMA")
+        reasons.append("EMA")
 
     elif ema_fast < ema_slow:
-
-        down_score += 15
+        down += 15
         confirmations += 1
-        reasons_down.append("EMA")
+        reasons.append("EMA")
 
-    ema_trend = _safe_float(
-        row.get("ema_trend")
-    )
+    close = float(row.get("close", 0) or 0)
+    ema_trend = float(row.get("ema_trend", 0) or 0)
 
-    price = _safe_float(
-        row.get(
-            "close",
-            row.get("price")
-        )
-    )
-
-    if price > ema_trend:
-
-        up_score += 15
+    if close > ema_trend:
+        up += 15
         confirmations += 1
-        reasons_up.append("TREND")
+        reasons.append("TREND")
 
-    elif price < ema_trend:
-
-        down_score += 15
+    elif close < ema_trend:
+        down += 15
         confirmations += 1
-        reasons_down.append("TREND")
+        reasons.append("TREND")
 
-    rsi = _safe_float(
-        row.get("rsi"),
-        50.0,
-    )
+    rsi = float(row.get("rsi", 50) or 50)
 
     if rsi >= 55:
-
-        up_score += 10
+        up += 10
         confirmations += 1
-        reasons_up.append("RSI")
+        reasons.append("RSI")
 
     elif rsi <= 45:
-
-        down_score += 10
+        down += 10
         confirmations += 1
-        reasons_down.append("RSI")
+        reasons.append("RSI")
 
-    macd = _safe_float(
-        row.get("macd")
-    )
-
-    macd_signal = _safe_float(
-        row.get("macd_signal")
+    macd = float(row.get("macd", 0) or 0)
+    macd_signal = float(
+        row.get("macd_signal", 0) or 0
     )
 
     if macd > macd_signal:
-
-        up_score += 15
+        up += 15
         confirmations += 1
-        reasons_up.append("MACD")
+        reasons.append("MACD")
 
     elif macd < macd_signal:
-
-        down_score += 15
+        down += 15
         confirmations += 1
-        reasons_down.append("MACD")
+        reasons.append("MACD")
 
-    bb_middle = _safe_float(
+    bb = float(
         row.get(
             "bollinger_middle",
-            row.get(
-                "bb_middle"
-            )
+            row.get("bb_middle", 0),
         )
+        or 0
     )
 
-    if (
-        bb_middle != 0.0
-        and price > bb_middle
-    ):
-
-        up_score += 10
+    if bb and close > bb:
+        up += 10
         confirmations += 1
-        reasons_up.append("BB")
+        reasons.append("BB")
 
-    elif (
-        bb_middle != 0.0
-        and price < bb_middle
-    ):
-
-        down_score += 10
+    elif bb and close < bb:
+        down += 10
         confirmations += 1
-        reasons_down.append("BB")
+        reasons.append("BB")
 
-    stochastic_k = _safe_float(
-        row.get(
-            "stochastic_k"
-        ),
-        50.0,
+    k = float(
+        row.get("stochastic_k", 50) or 50
     )
 
-    stochastic_d = _safe_float(
-        row.get(
-            "stochastic_d"
-        ),
-        50.0,
+    d = float(
+        row.get("stochastic_d", 50) or 50
     )
 
-    if stochastic_k > stochastic_d:
-
-        up_score += 10
+    if k > d:
+        up += 10
         confirmations += 1
-        reasons_up.append(
-            "STOCHASTIC"
-        )
+        reasons.append("STOCHASTIC")
 
-    elif stochastic_k < stochastic_d:
-
-        down_score += 10
+    elif k < d:
+        down += 10
         confirmations += 1
-        reasons_down.append(
-            "STOCHASTIC"
-        )
+        reasons.append("STOCHASTIC")
 
     bullish = bool(
-        row.get(
-            "bullish",
-            False,
-        )
+        row.get("bullish", False)
     )
 
     bearish = bool(
-        row.get(
-            "bearish",
-            False,
-        )
+        row.get("bearish", False)
     )
 
     if bullish:
-
-        up_score += 15
+        up += 15
         confirmations += 1
-        reasons_up.append(
-            "PRICE_ACTION"
-        )
+        reasons.append("PRICE_ACTION")
 
     elif bearish:
-
-        down_score += 15
+        down += 15
         confirmations += 1
-        reasons_down.append(
-            "PRICE_ACTION"
-        )
+        reasons.append("PRICE_ACTION")
 
-    if up_score == down_score:
+    if up == down:
+        return None, confirmations, 0.0, reasons
 
-        return (
-            None,
-            confirmations,
-            0.0,
-            [],
-        )
-
-    if up_score > down_score:
-
+    if up > down:
         direction = "UP"
-        score = up_score
-        reasons = reasons_up
-
+        score = up
     else:
-
         direction = "DOWN"
-        score = down_score
-        reasons = reasons_down
+        score = down
 
     confidence = min(
         100.0,
         50.0 + score * 0.5,
     )
 
-    if (
-        confirmations
-        < MIN_SIGNAL_CONFIRMATIONS
-    ):
-
-        return (
-            None,
-            confirmations,
-            confidence,
-            reasons,
-        )
+    if confirmations < MIN_SIGNAL_CONFIRMATIONS:
+        return None, confirmations, confidence, reasons
 
     return (
         direction,
@@ -289,189 +215,150 @@ def _evaluate_row(
     )
 
 
-def evaluate_row(
-    row: pd.Series,
-) -> Tuple[
-    Optional[str],
-    int,
-    float,
-    List[str],
-]:
+def _prepare(df: pd.DataFrame) -> pd.DataFrame:
 
-    return _evaluate_row(row)
+    data = df.copy()
 
-
-def _series_bool(
-    dataframe: pd.DataFrame,
-    column: str,
-) -> pd.Series:
-
-    if column not in dataframe.columns:
-
-        return pd.Series(
-            False,
-            index=dataframe.index,
-            dtype=bool,
-        )
-
-    return (
-        dataframe[column]
-        .fillna(False)
-        .astype(bool)
-    )
-
-
-def _series_float(
-    dataframe: pd.DataFrame,
-    column: str,
-    default: float = 0.0,
-) -> pd.Series:
-
-    if column not in dataframe.columns:
-
-        return pd.Series(
-            default,
-            index=dataframe.index,
-            dtype=float,
-        )
-
-    return (
-        pd.to_numeric(
-            dataframe[column],
+    if "datetime" in data.columns:
+        data["datetime"] = pd.to_datetime(
+            data["datetime"],
+            utc=True,
             errors="coerce",
         )
-        .fillna(default)
-    )
 
+        data = data.sort_values(
+            "datetime"
+        )
 
-def _vectorized_predictions(
-    dataframe: pd.DataFrame,
-):
+    data = data.reset_index(drop=True)
 
-    ema_fast = _series_float(
-        dataframe,
+    required = {
         "ema_fast",
-    )
-
-    ema_slow = _series_float(
-        dataframe,
         "ema_slow",
-    )
-
-    ema_trend = _series_float(
-        dataframe,
         "ema_trend",
-    )
+        "rsi",
+        "macd",
+        "macd_signal",
+        "bollinger_middle",
+        "stochastic_k",
+        "stochastic_d",
+        "bullish",
+        "bearish",
+    }
 
-    close = _series_float(
-        dataframe,
+    if not required.issubset(
+        set(data.columns)
+    ):
+        data = calculate_indicators(data)
+
+    return data
+
+
+def run_backtest(
+    df: pd.DataFrame,
+    expiry_minutes: int,
+    direction: Optional[str] = None,
+) -> BacktestResult:
+
+    try:
+        expiry = int(expiry_minutes)
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return BacktestResult()
+
+    if expiry < 1:
+        return BacktestResult()
+
+    if df is None or df.empty:
+        return BacktestResult()
+
+    data = _prepare(df)
+
+    if len(data) < 60 + expiry:
+        return BacktestResult()
+
+    close = _series(
+        data,
         "close",
     )
 
-    rsi = _series_float(
-        dataframe,
-        "rsi",
-        50.0,
+    ema_fast = _series(
+        data,
+        "ema_fast",
     )
 
-    macd = _series_float(
-        dataframe,
+    ema_slow = _series(
+        data,
+        "ema_slow",
+    )
+
+    ema_trend = _series(
+        data,
+        "ema_trend",
+    )
+
+    rsi = _series(
+        data,
+        "rsi",
+        50,
+    )
+
+    macd = _series(
+        data,
         "macd",
     )
 
-    macd_signal = _series_float(
-        dataframe,
+    macd_signal = _series(
+        data,
         "macd_signal",
     )
 
-    if (
-        "bollinger_middle"
-        in dataframe.columns
-    ):
+    bb = _series(
+        data,
+        "bollinger_middle",
+    )
 
-        bb_middle = _series_float(
-            dataframe,
-            "bollinger_middle",
-        )
-
-    else:
-
-        bb_middle = _series_float(
-            dataframe,
-            "bb_middle",
-        )
-
-    stochastic_k = _series_float(
-        dataframe,
+    k = _series(
+        data,
         "stochastic_k",
-        50.0,
+        50,
     )
 
-    stochastic_d = _series_float(
-        dataframe,
+    d = _series(
+        data,
         "stochastic_d",
-        50.0,
+        50,
     )
 
-    bullish = _series_bool(
-        dataframe,
+    bullish = _bool_series(
+        data,
         "bullish",
     )
 
-    bearish = _series_bool(
-        dataframe,
+    bearish = _bool_series(
+        data,
         "bearish",
     )
 
-    up_ema = (
-        ema_fast > ema_slow
-    )
+    up_ema = ema_fast > ema_slow
+    down_ema = ema_fast < ema_slow
 
-    down_ema = (
-        ema_fast < ema_slow
-    )
+    up_trend = close > ema_trend
+    down_trend = close < ema_trend
 
-    up_trend = (
-        close > ema_trend
-    )
+    up_rsi = rsi >= 55
+    down_rsi = rsi <= 45
 
-    down_trend = (
-        close < ema_trend
-    )
+    up_macd = macd > macd_signal
+    down_macd = macd < macd_signal
 
-    up_rsi = (
-        rsi >= 55
-    )
+    up_bb = close > bb
+    down_bb = close < bb
 
-    down_rsi = (
-        rsi <= 45
-    )
-
-    up_macd = (
-        macd > macd_signal
-    )
-
-    down_macd = (
-        macd < macd_signal
-    )
-
-    up_bb = (
-        close > bb_middle
-    )
-
-    down_bb = (
-        close < bb_middle
-    )
-
-    up_stoch = (
-        stochastic_k
-        > stochastic_d
-    )
-
-    down_stoch = (
-        stochastic_k
-        < stochastic_d
-    )
+    up_stoch = k > d
+    down_stoch = k < d
 
     up_action = bullish
     down_action = bearish
@@ -496,62 +383,53 @@ def _vectorized_predictions(
         + down_action.astype(float) * 15
     )
 
-    up_confirmations = (
+    confirmations = (
         up_ema.astype(int)
+        + down_ema.astype(int)
         + up_trend.astype(int)
-        + up_rsi.astype(int)
-        + up_macd.astype(int)
-        + up_bb.astype(int)
-        + up_stoch.astype(int)
-        + up_action.astype(int)
-    )
-
-    down_confirmations = (
-        down_ema.astype(int)
         + down_trend.astype(int)
+        + up_rsi.astype(int)
         + down_rsi.astype(int)
+        + up_macd.astype(int)
         + down_macd.astype(int)
+        + up_bb.astype(int)
         + down_bb.astype(int)
+        + up_stoch.astype(int)
         + down_stoch.astype(int)
+        + up_action.astype(int)
         + down_action.astype(int)
     )
 
-    confirmations = (
-        up_confirmations
-        + down_confirmations
-    )
-
-    direction = pd.Series(
+    prediction = pd.Series(
         None,
-        index=dataframe.index,
+        index=data.index,
         dtype=object,
     )
 
-    direction.loc[
+    prediction.loc[
         up_score > down_score
     ] = "UP"
 
-    direction.loc[
+    prediction.loc[
         down_score > up_score
     ] = "DOWN"
 
-    selected_score = pd.Series(
-        np.maximum(
-            up_score.to_numpy(),
-            down_score.to_numpy(),
-        ),
-        index=dataframe.index,
-    )
+    score = pd.concat(
+        [
+            up_score,
+            down_score,
+        ],
+        axis=1,
+    ).max(axis=1)
 
     confidence = (
-        50.0
-        + selected_score * 0.5
+        50.0 + score * 0.5
     ).clip(
         upper=100.0
     )
 
-    eligible = (
-        direction.notna()
+    mask = (
+        prediction.notna()
         & (
             confirmations
             >= MIN_SIGNAL_CONFIRMATIONS
@@ -561,233 +439,81 @@ def _vectorized_predictions(
         )
     )
 
-    return (
-        direction,
-        confirmations,
-        confidence,
-        eligible,
-    )
+    if direction:
 
+        normalized = str(
+            direction
+        ).upper().strip()
 
-def run_backtest(
-    df: pd.DataFrame,
-    expiry_minutes: int,
-    direction: Optional[str] = None,
-) -> BacktestResult:
+        if normalized not in {
+            "UP",
+            "DOWN",
+        }:
+            return BacktestResult()
 
-    try:
-        expiry = int(
-            expiry_minutes
-        )
-    except (
-        TypeError,
-        ValueError,
-    ):
-        return BacktestResult()
-
-    if expiry < 1:
-        return BacktestResult()
-
-    if df is None or df.empty:
-        return BacktestResult()
-
-    data = df.copy()
-
-    if len(data) < 60 + expiry:
-        return BacktestResult()
-
-    required_columns = {
-        "ema_fast",
-        "ema_slow",
-        "ema_trend",
-        "rsi",
-        "macd",
-        "macd_signal",
-        "bollinger_middle",
-        "stochastic_k",
-        "stochastic_d",
-        "bullish",
-        "bearish",
-    }
-
-    if not required_columns.issubset(
-        set(data.columns)
-    ):
-
-        data = calculate_indicators(
-            data
+        mask &= (
+            prediction == normalized
         )
 
-    if "datetime" in data.columns:
+    start = 60
+    end = len(data) - expiry
 
-        data["datetime"] = (
-            pd.to_datetime(
-                data["datetime"],
-                utc=True,
-                errors="coerce",
-            )
-        )
-
-        data = (
-            data
-            .sort_values(
-                "datetime"
-            )
-            .reset_index(
-                drop=True
-            )
-        )
-
-    else:
-
-        data = (
-            data
-            .reset_index(
-                drop=True
-            )
-        )
-
-    if len(data) < 60 + expiry:
-        return BacktestResult()
-
-    (
-        predictions,
-        confirmations,
-        confidence,
-        eligible,
-    ) = _vectorized_predictions(
-        data
-    )
-
-    start_index = 60
-
-    end_index = (
-        len(data) - expiry
-    )
-
-    if end_index <= start_index:
-        return BacktestResult()
-
-    mask = pd.Series(
+    valid_range = pd.Series(
         False,
         index=data.index,
     )
 
-    mask.iloc[
-        start_index:end_index
+    valid_range.iloc[
+        start:end
     ] = True
 
-    mask &= eligible
+    mask &= valid_range
 
-    if direction:
-
-        normalized_direction = (
-            str(direction)
-            .strip()
-            .upper()
-        )
-
-        if normalized_direction not in {
-            "UP",
-            "DOWN",
-        }:
-
-            return BacktestResult()
-
-        mask &= (
-            predictions
-            == normalized_direction
-        )
-
-    current_close = _series_float(
-        data,
-        "close",
+    future = close.shift(
+        -expiry
     )
 
-    future_close = (
-        current_close
-        .shift(-expiry)
-    )
+    mask &= future.notna()
 
-    valid = (
-        mask
-        & future_close.notna()
-    )
-
-    if not bool(valid.any()):
+    if not bool(mask.any()):
         return BacktestResult()
 
-    predicted = predictions.loc[
-        valid
-    ]
+    current = close.loc[mask]
+    future_values = future.loc[mask]
+    predicted = prediction.loc[mask]
 
-    current = current_close.loc[
-        valid
-    ]
-
-    future = future_close.loc[
-        valid
-    ]
-
-    up_predictions = (
-        predicted == "UP"
-    )
-
-    down_predictions = (
-        predicted == "DOWN"
-    )
-
-    up_wins = (
-        up_predictions
-        & (future > current)
-    )
-
-    up_losses = (
-        up_predictions
-        & (future < current)
-    )
-
-    down_wins = (
-        down_predictions
-        & (future < current)
-    )
-
-    down_losses = (
-        down_predictions
-        & (future > current)
-    )
-
-    draws = (
-        future == current
-    )
+    up_mask = predicted == "UP"
+    down_mask = predicted == "DOWN"
 
     wins = int(
         (
-            up_wins
-            | down_wins
+            (up_mask & (future_values > current))
+            | (
+                down_mask
+                & (future_values < current)
+            )
         ).sum()
     )
 
     losses = int(
         (
-            up_losses
-            | down_losses
+            (up_mask & (future_values < current))
+            | (
+                down_mask
+                & (future_values > current)
+            )
         ).sum()
     )
 
-    draw_count = int(
-        draws.sum()
-    )
-
-    total = (
-        wins
-        + losses
-        + draw_count
+    draws = int(
+        (
+            future_values == current
+        ).sum()
     )
 
     return BacktestResult(
-        total=total,
+        total=wins + losses + draws,
         wins=wins,
         losses=losses,
-        draws=draw_count,
+        draws=draws,
     )
