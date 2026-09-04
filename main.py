@@ -9,19 +9,19 @@ from fastapi import FastAPI
 
 from admin import router as admin_router
 from config import BOT_TOKEN
-from database import (
-    close_db,
-    init_db,
-)
+from database import close_db, init_db
 from handlers import router as user_router
 from market import market_client
 from owner import router as owner_router
 from scheduler import SignalScheduler
 from signal_engine import SignalEngine
-from signal_result_checker import (
-    SignalResultChecker,
-)
+from signal_result_checker import SignalResultChecker
+from signal_scanner import SignalScanner
 
+
+# ============================================================
+# LOGGING
+# ============================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,56 +33,80 @@ logging.basicConfig(
     ),
 )
 
-logger = logging.getLogger(
-    "teyzoo"
-)
+logger = logging.getLogger("teyzoo")
 
+
+# ============================================================
+# TELEGRAM
+# ============================================================
 
 bot = Bot(
-    token=BOT_TOKEN
+    token=BOT_TOKEN,
 )
 
 dp = Dispatcher()
 
-dp.include_router(
-    admin_router
-)
+dp.include_router(admin_router)
+dp.include_router(owner_router)
+dp.include_router(user_router)
 
-dp.include_router(
-    owner_router
-)
 
-dp.include_router(
-    user_router
-)
-
+# ============================================================
+# SIGNAL ENGINE / SCANNER
+# ============================================================
 
 engine = SignalEngine()
 
-scheduler = SignalScheduler(
-    bot=bot,
+scanner = SignalScanner(
     market=market_client,
     engine=engine,
 )
 
-result_checker = SignalResultChecker(
+
+# ============================================================
+# SCHEDULER
+# ============================================================
+
+scheduler = SignalScheduler(
     bot=bot,
-    market=market_client,
+    scanner=scanner,
 )
 
 
+# ============================================================
+# RESULT CHECKER
+# ============================================================
+
+result_checker = SignalResultChecker(
+    bot=bot,
+    market_client=market_client,
+)
+
+
+# ============================================================
+# TELEGRAM POLLING
+# ============================================================
+
 async def polling_loop() -> None:
-    logger.info(
-        "Telegram polling starting"
-    )
+    logger.info("Telegram polling starting")
 
-    await dp.start_polling(
-        bot,
-        allowed_updates=(
-            dp.resolve_used_update_types()
-        ),
-    )
+    try:
+        await dp.start_polling(
+            bot,
+            allowed_updates=dp.resolve_used_update_types(),
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception(
+            "Telegram polling stopped with error"
+        )
+        raise
 
+
+# ============================================================
+# FASTAPI LIFESPAN
+# ============================================================
 
 @asynccontextmanager
 async def lifespan(
@@ -98,17 +122,17 @@ async def lifespan(
         "Database initialized"
     )
 
+    # --------------------------------------------------------
+    # Start background components.
+    # --------------------------------------------------------
+
     polling_task = asyncio.create_task(
-        polling_loop()
+        polling_loop(),
+        name="telegram-polling",
     )
 
-    scheduler_task = asyncio.create_task(
-        scheduler.run()
-    )
-
-    result_task = asyncio.create_task(
-        result_checker.run()
-    )
+    await scheduler.start()
+    await result_checker.start()
 
     logger.info(
         "TEYZOO Signal Bot started"
@@ -119,31 +143,87 @@ async def lifespan(
 
     finally:
         logger.info(
-            "Stopping bot"
+            "Stopping TEYZOO Signal Bot"
         )
 
-        for task in (
-            polling_task,
-            scheduler_task,
-            result_task,
-        ):
-            task.cancel()
+        # ----------------------------------------------------
+        # Stop scheduler.
+        # ----------------------------------------------------
 
-        await asyncio.gather(
-            polling_task,
-            scheduler_task,
-            result_task,
-            return_exceptions=True,
-        )
+        try:
+            await scheduler.stop()
+        except Exception:
+            logger.exception(
+                "Failed to stop signal scheduler"
+            )
 
-        await bot.session.close()
+        # ----------------------------------------------------
+        # Stop result checker.
+        # ----------------------------------------------------
 
-        await close_db()
+        try:
+            await result_checker.stop()
+        except Exception:
+            logger.exception(
+                "Failed to stop result checker"
+            )
+
+        # ----------------------------------------------------
+        # Stop Telegram polling.
+        # ----------------------------------------------------
+
+        polling_task.cancel()
+
+        try:
+            await polling_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception(
+                "Telegram polling shutdown error"
+            )
+
+        # ----------------------------------------------------
+        # Close Telegram session.
+        # ----------------------------------------------------
+
+        try:
+            await bot.session.close()
+        except Exception:
+            logger.exception(
+                "Failed to close Telegram bot session"
+            )
+
+        # ----------------------------------------------------
+        # Close database.
+        # ----------------------------------------------------
+
+        try:
+            await close_db()
+        except Exception:
+            logger.exception(
+                "Failed to close database"
+            )
+
+        # ----------------------------------------------------
+        # Close market client.
+        # ----------------------------------------------------
+
+        try:
+            await market_client.close()
+        except Exception:
+            logger.exception(
+                "Failed to close market client"
+            )
 
         logger.info(
-            "Bot stopped"
+            "TEYZOO Signal Bot stopped"
         )
 
+
+# ============================================================
+# FASTAPI
+# ============================================================
 
 app = FastAPI(
     title="TEYZOO Signal Bot",
@@ -151,6 +231,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+# ============================================================
+# ROUTES
+# ============================================================
 
 @app.get("/")
 async def root() -> dict:
