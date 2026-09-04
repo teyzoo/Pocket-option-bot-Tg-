@@ -16,14 +16,18 @@ from config import (
     SIGNAL_RESULT_PENDING,
     SIGNAL_RESULT_WIN,
 )
+
 from database import (
     Signal,
     SignalRecipient,
     User,
     get_session,
 )
+
 from messages import render_message
+
 from models import SignalCandidate
+
 from utils import (
     direction_text,
     format_confidence,
@@ -33,44 +37,76 @@ from utils import (
 )
 
 
-def _safe_json(value: object) -> str:
+# ============================================================
+# JSON
+# ============================================================
+
+def _safe_json(
+    value: object,
+) -> str:
+
     try:
         return json.dumps(
             value,
             ensure_ascii=False,
             default=str,
         )
+
     except Exception:
         return "{}"
 
 
+# ============================================================
+# FILE CLEANUP
+# ============================================================
+
 def _remove_file(
     path: str | None,
 ) -> None:
+
     if not path:
         return
 
     try:
-        file_path = Path(path)
 
-        if file_path.exists() and file_path.is_file():
+        file_path = Path(
+            path
+        )
+
+        if (
+            file_path.exists()
+            and file_path.is_file()
+        ):
             file_path.unlink()
 
     except Exception:
         pass
 
 
+# ============================================================
+# SIGNAL MESSAGE
+# ============================================================
+
 def format_signal_message(
     signal: Signal | SignalCandidate,
     *,
     include_status: bool = False,
 ) -> str:
+
     pair = format_pair(
-        getattr(signal, "pair", "—")
+        getattr(
+            signal,
+            "pair",
+            "—",
+        )
     )
 
     direction = direction_text(
-        getattr(signal, "direction", "—")
+        getattr(
+            signal,
+            "direction",
+            "—",
+        )
     )
 
     expiry_minutes = int(
@@ -136,17 +172,33 @@ def format_signal_message(
         None,
     ) or []
 
-    if isinstance(reasons, str):
-        try:
-            decoded = json.loads(reasons)
+    if isinstance(
+        reasons,
+        str,
+    ):
 
-            if isinstance(decoded, list):
+        try:
+
+            decoded = json.loads(
+                reasons
+            )
+
+            if isinstance(
+                decoded,
+                list,
+            ):
                 reasons = decoded
+
             else:
-                reasons = [reasons]
+                reasons = [
+                    reasons
+                ]
 
         except Exception:
-            reasons = [reasons]
+
+            reasons = [
+                reasons
+            ]
 
     reason_lines = "\n".join(
         f"• {str(reason)}"
@@ -155,6 +207,7 @@ def format_signal_message(
     )
 
     if not reason_lines:
+
         reason_lines = (
             "• Сигнал подтверждён "
             "техническими индикаторами."
@@ -167,15 +220,20 @@ def format_signal_message(
     )
 
     if include_status:
+
         status_map = {
             SIGNAL_RESULT_PENDING:
                 "⏳ Ожидает результата",
+
             SIGNAL_RESULT_WIN:
                 "✅ WIN",
+
             SIGNAL_RESULT_LOSS:
                 "❌ LOSS",
+
             SIGNAL_RESULT_DRAW:
                 "➖ DRAW",
+
             SIGNAL_RESULT_CANCELLED:
                 "⚪ Отменён",
         }
@@ -184,7 +242,9 @@ def format_signal_message(
             status,
             "⏳ Ожидает результата",
         )
+
     else:
+
         status_text = ""
 
     market = getattr(
@@ -207,63 +267,144 @@ def format_signal_message(
 
     return render_message(
         "signal",
+
         pair=pair,
+
         direction=direction,
+
         expiry_minutes=expiry_minutes,
+
         confidence=format_confidence(
             confidence
         ),
+
         quality=format_confidence(
             quality
         ),
-        winrate=f"{winrate:.2f}%",
+
+        winrate=(
+            f"{winrate:.2f}%"
+        ),
+
         entry_price=format_price(
             entry_price
         ),
+
         close_time=format_datetime(
             expires_at
         ),
+
         confirmations=confirmations,
+
         reasons=reason_lines,
+
         market=market_text,
+
         source=source,
+
         status=status_text,
     )
 
 
+# ============================================================
+# SAVE SIGNAL
+# ============================================================
+
 async def save_signal(
     candidate: SignalCandidate,
 ) -> Signal:
+
     metadata = getattr(
         candidate,
         "metadata",
         {},
     )
 
-    if not isinstance(metadata, dict):
+    if not isinstance(
+        metadata,
+        dict,
+    ):
         metadata = {}
 
+    # Гарантируем, что важные значения
+    # доступны и в metadata.
+    metadata.setdefault(
+        "winrate_trades",
+        getattr(
+            candidate,
+            "winrate_trades",
+            0,
+        ),
+    )
+
+    metadata.setdefault(
+        "winrate_wins",
+        getattr(
+            candidate,
+            "wins",
+            0,
+        ),
+    )
+
+    metadata.setdefault(
+        "winrate_losses",
+        getattr(
+            candidate,
+            "losses",
+            0,
+        ),
+    )
+
+    metadata.setdefault(
+        "winrate_draws",
+        getattr(
+            candidate,
+            "draws",
+            0,
+        ),
+    )
+
+    chart_path = getattr(
+        candidate,
+        "chart_path",
+        None,
+    )
+
+    if chart_path:
+
+        metadata[
+            "chart_path"
+        ] = chart_path
+
     async with get_session() as session:
+
         signal = Signal(
             pair=candidate.pair,
+
             market=getattr(
                 candidate,
                 "market",
                 "regular",
             ),
+
             direction=candidate.direction,
+
             expiry_minutes=int(
                 candidate.expiry_minutes
             ),
+
             confidence=float(
                 candidate.confidence
             ),
+
             quality=float(
                 candidate.quality
             ),
+
             winrate=float(
                 candidate.winrate
             ),
+
             winrate_trades=int(
                 metadata.get(
                     "winrate_trades",
@@ -274,78 +415,104 @@ async def save_signal(
                     ),
                 )
             ),
+
             winrate_wins=int(
                 metadata.get(
                     "winrate_wins",
                     getattr(
                         candidate,
-                        "winrate_wins",
+                        "wins",
                         0,
                     ),
                 )
             ),
+
             winrate_losses=int(
                 metadata.get(
                     "winrate_losses",
                     getattr(
                         candidate,
-                        "winrate_losses",
+                        "losses",
                         0,
                     ),
                 )
             ),
+
             winrate_draws=int(
                 metadata.get(
                     "winrate_draws",
                     getattr(
                         candidate,
-                        "winrate_draws",
+                        "draws",
                         0,
                     ),
                 )
             ),
+
             confirmations=int(
                 candidate.confirmations
             ),
+
             entry_price=float(
                 candidate.entry_price
             ),
+
             close_price=None,
+
             result=SIGNAL_RESULT_PENDING,
+
             source=candidate.source,
+
             reasons=list(
                 candidate.reasons
             ),
-            # ВАЖНО:
-            # ORM-атрибут называется metadata_json.
+
             metadata_json=metadata,
+
             created_at=candidate.created_at,
+
             expires_at=candidate.expires_at,
         )
 
-        session.add(signal)
+        session.add(
+            signal
+        )
 
         await session.commit()
-        await session.refresh(signal)
+
+        await session.refresh(
+            signal
+        )
 
         return signal
 
+
+# ============================================================
+# USERS
+# ============================================================
 
 async def get_approved_users(
     *,
     auto_only: bool = False,
 ) -> list[User]:
+
     async with get_session() as session:
+
         conditions = [
             User.status == "approved",
         ]
 
         if auto_only:
+
             conditions.append(
-                User.is_auto_signals_enabled.is_(True)
+                User.is_auto_signals_enabled.is_(
+                    True
+                )
             )
 
-        query = select(User).where(
+        query = select(
+            User
+        ).where(
             *conditions
         )
 
@@ -358,25 +525,105 @@ async def get_approved_users(
         )
 
 
+# ============================================================
+# RECIPIENT
+# ============================================================
+
 async def add_recipient(
     signal_id: int,
     telegram_id: int,
     message_id: int,
 ) -> SignalRecipient:
+
     async with get_session() as session:
+
         recipient = SignalRecipient(
             signal_id=signal_id,
             telegram_id=telegram_id,
             message_id=message_id,
         )
 
-        session.add(recipient)
+        session.add(
+            recipient
+        )
 
         await session.commit()
-        await session.refresh(recipient)
+
+        await session.refresh(
+            recipient
+        )
 
         return recipient
 
+
+# ============================================================
+# GET CHART PATH
+# ============================================================
+
+def _get_signal_chart_path(
+    signal: Signal | SignalCandidate,
+) -> str | None:
+
+    # 1. Явный chart_path.
+    explicit = getattr(
+        signal,
+        "chart_path",
+        None,
+    )
+
+    if explicit:
+        return str(
+            explicit
+        )
+
+    # 2. metadata_json из ORM Signal.
+    metadata = getattr(
+        signal,
+        "metadata_json",
+        None,
+    )
+
+    if isinstance(
+        metadata,
+        dict,
+    ):
+
+        path = metadata.get(
+            "chart_path"
+        )
+
+        if path:
+            return str(
+                path
+            )
+
+    # 3. metadata у SignalCandidate.
+    metadata = getattr(
+        signal,
+        "metadata",
+        None,
+    )
+
+    if isinstance(
+        metadata,
+        dict,
+    ):
+
+        path = metadata.get(
+            "chart_path"
+        )
+
+        if path:
+            return str(
+                path
+            )
+
+    return None
+
+
+# ============================================================
+# SEND ONE USER
+# ============================================================
 
 async def send_signal_to_user(
     bot: Bot,
@@ -385,38 +632,74 @@ async def send_signal_to_user(
     *,
     chart_path: str | None = None,
 ) -> bool:
-    text = format_signal_message(signal)
+
+    text = format_signal_message(
+        signal
+    )
+
+    # Если путь не передали напрямую,
+    # пытаемся достать его из сохранённого сигнала.
+    if not chart_path:
+
+        chart_path = (
+            _get_signal_chart_path(
+                signal
+            )
+        )
 
     sent_message = None
 
     try:
+
         if (
             chart_path
-            and os.path.exists(chart_path)
-        ):
-            sent_message = await bot.send_photo(
-                chat_id=telegram_id,
-                photo=FSInputFile(chart_path),
-                caption=text,
+            and os.path.exists(
+                chart_path
             )
-        else:
-            sent_message = await bot.send_message(
-                chat_id=telegram_id,
-                text=text,
+        ):
+
+            sent_message = (
+                await bot.send_photo(
+                    chat_id=telegram_id,
+                    photo=FSInputFile(
+                        chart_path
+                    ),
+                    caption=text,
+                )
             )
 
-        if isinstance(signal, Signal):
+        else:
+
+            sent_message = (
+                await bot.send_message(
+                    chat_id=telegram_id,
+                    text=text,
+                )
+            )
+
+        if isinstance(
+            signal,
+            Signal,
+        ):
+
             await add_recipient(
                 signal_id=signal.id,
                 telegram_id=telegram_id,
-                message_id=sent_message.message_id,
+                message_id=(
+                    sent_message.message_id
+                ),
             )
 
         return True
 
     except Exception:
+
         return False
 
+
+# ============================================================
+# BROADCAST
+# ============================================================
 
 async def broadcast_signal(
     bot: Bot,
@@ -425,20 +708,38 @@ async def broadcast_signal(
     telegram_ids: Iterable[int] | None = None,
     chart_path: str | None = None,
 ) -> int:
+
     if telegram_ids is None:
-        users = await get_approved_users(
-            auto_only=True
+
+        users = (
+            await get_approved_users(
+                auto_only=True
+            )
         )
 
         telegram_ids = [
-            int(user.telegram_id)
+            int(
+                user.telegram_id
+            )
             for user in users
         ]
+
+    # Если scheduler не передал путь,
+    # берём его из metadata.
+    if not chart_path:
+
+        chart_path = (
+            _get_signal_chart_path(
+                signal
+            )
+        )
 
     sent_count = 0
 
     try:
+
         for telegram_id in telegram_ids:
+
             if await send_signal_to_user(
                 bot=bot,
                 signal=signal,
@@ -447,13 +748,21 @@ async def broadcast_signal(
                 ),
                 chart_path=chart_path,
             ):
+
                 sent_count += 1
 
     finally:
-        _remove_file(chart_path)
+
+        _remove_file(
+            chart_path
+        )
 
     return sent_count
 
+
+# ============================================================
+# MANUAL SIGNAL
+# ============================================================
 
 async def send_manual_signal(
     bot: Bot,
@@ -462,7 +771,23 @@ async def send_manual_signal(
     *,
     chart_path: str | None = None,
 ) -> bool:
+
+    # Для ручного сигнала handlers.py
+    # сейчас передаёт chart_path=None.
+    #
+    # Поэтому автоматически достаём график
+    # из metadata_json.
+
+    if not chart_path:
+
+        chart_path = (
+            _get_signal_chart_path(
+                signal
+            )
+        )
+
     try:
+
         return await send_signal_to_user(
             bot=bot,
             signal=signal,
@@ -471,24 +796,38 @@ async def send_manual_signal(
         )
 
     finally:
-        _remove_file(chart_path)
 
+        _remove_file(
+            chart_path
+        )
+
+
+# ============================================================
+# GET SIGNAL
+# ============================================================
 
 async def get_signal_by_id(
     signal_id: int,
 ) -> Signal | None:
+
     async with get_session() as session:
+
         return await session.get(
             Signal,
             signal_id,
         )
 
 
+# ============================================================
+# RESULT
+# ============================================================
+
 async def mark_signal_result(
     signal_id: int,
     result: str,
     close_price: float | None,
 ) -> Signal | None:
+
     allowed_results = {
         SIGNAL_RESULT_PENDING,
         SIGNAL_RESULT_WIN,
@@ -498,11 +837,13 @@ async def mark_signal_result(
     }
 
     if result not in allowed_results:
+
         raise ValueError(
             f"Unknown signal result: {result}"
         )
 
     async with get_session() as session:
+
         signal = await session.get(
             Signal,
             signal_id,
@@ -521,18 +862,28 @@ async def mark_signal_result(
 
         from time_utils import utc_now
 
-        signal.checked_at = utc_now()
+        signal.checked_at = (
+            utc_now()
+        )
 
         await session.commit()
-        await session.refresh(signal)
+
+        await session.refresh(
+            signal
+        )
 
         return signal
 
+
+# ============================================================
+# HISTORY
+# ============================================================
 
 async def get_user_signal_history(
     telegram_id: int,
     limit: int = 20,
 ) -> list[Signal]:
+
     limit = max(
         1,
         min(
@@ -542,6 +893,7 @@ async def get_user_signal_history(
     )
 
     async with get_session() as session:
+
         query = (
             select(Signal)
             .join(
