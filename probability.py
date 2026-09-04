@@ -65,3 +65,9 @@ class ProbabilityCalibrator:
             and estimate.winrate
             >= self.minimum_winrate
         )
+
+
+# Global compatibility instance.
+# Used by signal_engine.py:
+# from probability import probability_calibrator
+probability_calibrator = ProbabilityCalibrator()
