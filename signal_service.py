@@ -7,6 +7,7 @@ from typing import Iterable
 
 from aiogram import Bot
 from aiogram.types import FSInputFile
+from sqlalchemy import select
 
 from config import (
     SIGNAL_RESULT_CANCELLED,
@@ -34,19 +35,27 @@ from utils import (
 
 def _safe_json(value: object) -> str:
     try:
-        return json.dumps(value, ensure_ascii=False, default=str)
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            default=str,
+        )
     except Exception:
         return "{}"
 
 
-def _remove_file(path: str | None) -> None:
+def _remove_file(
+    path: str | None,
+) -> None:
     if not path:
         return
 
     try:
         file_path = Path(path)
+
         if file_path.exists() and file_path.is_file():
             file_path.unlink()
+
     except Exception:
         pass
 
@@ -56,29 +65,87 @@ def format_signal_message(
     *,
     include_status: bool = False,
 ) -> str:
-    pair = format_pair(getattr(signal, "pair", "—"))
-    direction = direction_text(getattr(signal, "direction", "—"))
 
-    expiry_minutes = int(getattr(signal, "expiry_minutes", 5) or 5)
+    pair = format_pair(
+        getattr(signal, "pair", "—")
+    )
 
-    confidence = float(getattr(signal, "confidence", 0) or 0)
-    quality = float(getattr(signal, "quality", 0) or 0)
-    winrate = float(getattr(signal, "winrate", 0) or 0)
+    direction = direction_text(
+        getattr(signal, "direction", "—")
+    )
 
-    entry_price = getattr(signal, "entry_price", None)
-    expires_at = getattr(signal, "expires_at", None)
+    expiry_minutes = int(
+        getattr(
+            signal,
+            "expiry_minutes",
+            5,
+        )
+        or 5
+    )
 
-    confirmations = int(getattr(signal, "confirmations", 0) or 0)
+    confidence = float(
+        getattr(
+            signal,
+            "confidence",
+            0,
+        )
+        or 0
+    )
 
-    reasons = getattr(signal, "reasons", None) or []
+    quality = float(
+        getattr(
+            signal,
+            "quality",
+            0,
+        )
+        or 0
+    )
+
+    winrate = float(
+        getattr(
+            signal,
+            "winrate",
+            0,
+        )
+        or 0
+    )
+
+    entry_price = getattr(
+        signal,
+        "entry_price",
+        None,
+    )
+
+    expires_at = getattr(
+        signal,
+        "expires_at",
+        None,
+    )
+
+    confirmations = int(
+        getattr(
+            signal,
+            "confirmations",
+            0,
+        )
+        or 0
+    )
+
+    reasons = getattr(
+        signal,
+        "reasons",
+        None,
+    ) or []
 
     if isinstance(reasons, str):
         try:
             decoded = json.loads(reasons)
+
             if isinstance(decoded, list):
                 reasons = decoded
             else:
                 reasons = [reasons]
+
         except Exception:
             reasons = [reasons]
 
@@ -89,37 +156,74 @@ def format_signal_message(
     )
 
     if not reason_lines:
-        reason_lines = "• Сигнал подтверждён техническими индикаторами."
+        reason_lines = (
+            "• Сигнал подтверждён "
+            "техническими индикаторами."
+        )
 
-    status = getattr(signal, "result", SIGNAL_RESULT_PENDING)
+    status = getattr(
+        signal,
+        "result",
+        SIGNAL_RESULT_PENDING,
+    )
 
     if include_status:
         status_map = {
-            SIGNAL_RESULT_PENDING: "⏳ Ожидает результата",
-            SIGNAL_RESULT_WIN: "✅ WIN",
-            SIGNAL_RESULT_LOSS: "❌ LOSS",
-            SIGNAL_RESULT_DRAW: "➖ DRAW",
-            SIGNAL_RESULT_CANCELLED: "⚪ Отменён",
+            SIGNAL_RESULT_PENDING:
+                "⏳ Ожидает результата",
+            SIGNAL_RESULT_WIN:
+                "✅ WIN",
+            SIGNAL_RESULT_LOSS:
+                "❌ LOSS",
+            SIGNAL_RESULT_DRAW:
+                "➖ DRAW",
+            SIGNAL_RESULT_CANCELLED:
+                "⚪ Отменён",
         }
-        status_text = status_map.get(status, "⏳ Ожидает результата")
+
+        status_text = status_map.get(
+            status,
+            "⏳ Ожидает результата",
+        )
     else:
         status_text = ""
 
-    market = getattr(signal, "market", "regular")
-    market_text = "OTC" if market == "otc" else "FOREX"
+    market = getattr(
+        signal,
+        "market",
+        "regular",
+    )
 
-    source = getattr(signal, "source", "signal_engine")
+    market_text = (
+        "OTC"
+        if market == "otc"
+        else "FOREX"
+    )
 
-    text = render_message(
+    source = getattr(
+        signal,
+        "source",
+        "signal_engine",
+    )
+
+    return render_message(
         "signal",
         pair=pair,
         direction=direction,
         expiry_minutes=expiry_minutes,
-        confidence=format_confidence(confidence),
-        quality=format_confidence(quality),
+        confidence=format_confidence(
+            confidence
+        ),
+        quality=format_confidence(
+            quality
+        ),
         winrate=f"{winrate:.2f}%",
-        entry_price=format_price(entry_price),
-        close_time=format_datetime(expires_at),
+        entry_price=format_price(
+            entry_price
+        ),
+        close_time=format_datetime(
+            expires_at
+        ),
         confirmations=confirmations,
         reasons=reason_lines,
         market=market_text,
@@ -127,55 +231,86 @@ def format_signal_message(
         status=status_text,
     )
 
-    return text
 
+async def save_signal(
+    candidate: SignalCandidate,
+) -> Signal:
 
-async def save_signal(candidate: SignalCandidate) -> Signal:
+    metadata = getattr(
+        candidate,
+        "metadata",
+        {},
+    )
+
+    if not isinstance(metadata, dict):
+        metadata = {}
+
     async with get_session() as session:
         signal = Signal(
             pair=candidate.pair,
-            market=getattr(candidate, "market", "regular"),
+            market=getattr(
+                candidate,
+                "market",
+                "regular",
+            ),
             direction=candidate.direction,
-            expiry_minutes=int(candidate.expiry_minutes),
-            confidence=float(candidate.confidence),
-            quality=float(candidate.quality),
-            winrate=float(candidate.winrate),
+            expiry_minutes=int(
+                candidate.expiry_minutes
+            ),
+            confidence=float(
+                candidate.confidence
+            ),
+            quality=float(
+                candidate.quality
+            ),
+            winrate=float(
+                candidate.winrate
+            ),
             winrate_trades=int(
-                getattr(candidate, "metadata", {}).get("winrate_trades", 0)
-                if isinstance(getattr(candidate, "metadata", {}), dict)
-                else 0
+                metadata.get(
+                    "winrate_trades",
+                    0,
+                )
             ),
             winrate_wins=int(
-                getattr(candidate, "metadata", {}).get("winrate_wins", 0)
-                if isinstance(getattr(candidate, "metadata", {}), dict)
-                else 0
+                metadata.get(
+                    "winrate_wins",
+                    0,
+                )
             ),
             winrate_losses=int(
-                getattr(candidate, "metadata", {}).get("winrate_losses", 0)
-                if isinstance(getattr(candidate, "metadata", {}), dict)
-                else 0
+                metadata.get(
+                    "winrate_losses",
+                    0,
+                )
             ),
             winrate_draws=int(
-                getattr(candidate, "metadata", {}).get("winrate_draws", 0)
-                if isinstance(getattr(candidate, "metadata", {}), dict)
-                else 0
+                metadata.get(
+                    "winrate_draws",
+                    0,
+                )
             ),
-            confirmations=int(candidate.confirmations),
-            entry_price=float(candidate.entry_price),
+            confirmations=int(
+                candidate.confirmations
+            ),
+            entry_price=float(
+                candidate.entry_price
+            ),
             close_price=None,
             result=SIGNAL_RESULT_PENDING,
             source=candidate.source,
-            reasons=_safe_json(candidate.reasons),
+            reasons=_safe_json(
+                candidate.reasons
+            ),
             metadata=_safe_json(
-                getattr(candidate, "metadata", {})
-                if getattr(candidate, "metadata", None) is not None
-                else {}
+                metadata
             ),
             created_at=candidate.created_at,
             expires_at=candidate.expires_at,
         )
 
         session.add(signal)
+
         await session.commit()
         await session.refresh(signal)
 
@@ -186,18 +321,29 @@ async def get_approved_users(
     *,
     auto_only: bool = False,
 ) -> list[User]:
+
     async with get_session() as session:
-        query = session.query(User).filter(
+
+        conditions = [
             User.status == "approved",
-        )
+        ]
 
         if auto_only:
-            query = query.filter(
-                User.is_auto_signals_enabled.is_(True),
+            conditions.append(
+                User.is_auto_signals_enabled.is_(True)
             )
 
-        result = await session.execute(query)
-        return list(result.scalars().all())
+        query = select(User).where(
+            *conditions
+        )
+
+        result = await session.execute(
+            query
+        )
+
+        return list(
+            result.scalars().all()
+        )
 
 
 async def add_recipient(
@@ -205,6 +351,7 @@ async def add_recipient(
     telegram_id: int,
     message_id: int,
 ) -> SignalRecipient:
+
     async with get_session() as session:
         recipient = SignalRecipient(
             signal_id=signal_id,
@@ -213,6 +360,7 @@ async def add_recipient(
         )
 
         session.add(recipient)
+
         await session.commit()
         await session.refresh(recipient)
 
@@ -226,17 +374,23 @@ async def send_signal_to_user(
     *,
     chart_path: str | None = None,
 ) -> bool:
-    text = format_signal_message(signal)
+
+    text = format_signal_message(
+        signal
+    )
 
     sent_message = None
 
     try:
-        if chart_path and os.path.exists(chart_path):
-            photo = FSInputFile(chart_path)
-
+        if (
+            chart_path
+            and os.path.exists(chart_path)
+        ):
             sent_message = await bot.send_photo(
                 chat_id=telegram_id,
-                photo=photo,
+                photo=FSInputFile(
+                    chart_path
+                ),
                 caption=text,
             )
         else:
@@ -265,8 +419,12 @@ async def broadcast_signal(
     telegram_ids: Iterable[int] | None = None,
     chart_path: str | None = None,
 ) -> int:
+
     if telegram_ids is None:
-        users = await get_approved_users(auto_only=True)
+        users = await get_approved_users(
+            auto_only=True
+        )
+
         telegram_ids = [
             int(user.telegram_id)
             for user in users
@@ -276,14 +434,14 @@ async def broadcast_signal(
 
     try:
         for telegram_id in telegram_ids:
-            ok = await send_signal_to_user(
+            if await send_signal_to_user(
                 bot=bot,
                 signal=signal,
-                telegram_id=int(telegram_id),
+                telegram_id=int(
+                    telegram_id
+                ),
                 chart_path=chart_path,
-            )
-
-            if ok:
+            ):
                 sent_count += 1
 
     finally:
@@ -299,24 +457,28 @@ async def send_manual_signal(
     *,
     chart_path: str | None = None,
 ) -> bool:
+
     try:
-        result = await send_signal_to_user(
+        return await send_signal_to_user(
             bot=bot,
             signal=signal,
             telegram_id=telegram_id,
             chart_path=chart_path,
         )
 
-        return result
-
     finally:
         _remove_file(chart_path)
 
 
-async def get_signal_by_id(signal_id: int) -> Signal | None:
+async def get_signal_by_id(
+    signal_id: int,
+) -> Signal | None:
+
     async with get_session() as session:
-        signal = await session.get(Signal, signal_id)
-        return signal
+        return await session.get(
+            Signal,
+            signal_id,
+        )
 
 
 async def mark_signal_result(
@@ -324,6 +486,7 @@ async def mark_signal_result(
     result: str,
     close_price: float | None,
 ) -> Signal | None:
+
     allowed_results = {
         SIGNAL_RESULT_PENDING,
         SIGNAL_RESULT_WIN,
@@ -333,15 +496,21 @@ async def mark_signal_result(
     }
 
     if result not in allowed_results:
-        raise ValueError(f"Unknown signal result: {result}")
+        raise ValueError(
+            f"Unknown signal result: {result}"
+        )
 
     async with get_session() as session:
-        signal = await session.get(Signal, signal_id)
+        signal = await session.get(
+            Signal,
+            signal_id,
+        )
 
         if signal is None:
             return None
 
         signal.result = result
+
         signal.close_price = (
             float(close_price)
             if close_price is not None
@@ -362,24 +531,37 @@ async def get_user_signal_history(
     telegram_id: int,
     limit: int = 20,
 ) -> list[Signal]:
-    limit = max(1, min(int(limit), 100))
+
+    limit = max(
+        1,
+        min(
+            int(limit),
+            100,
+        ),
+    )
 
     async with get_session() as session:
         query = (
-            session.query(Signal)
+            select(Signal)
             .join(
                 SignalRecipient,
-                SignalRecipient.signal_id == Signal.id,
+                SignalRecipient.signal_id
+                == Signal.id,
             )
-            .filter(
-                SignalRecipient.telegram_id == int(telegram_id),
+            .where(
+                SignalRecipient.telegram_id
+                == int(telegram_id)
             )
             .order_by(
-                Signal.created_at.desc(),
+                Signal.created_at.desc()
             )
             .limit(limit)
         )
 
-        result = await session.execute(query)
+        result = await session.execute(
+            query
+        )
 
-        return list(result.scalars().all())
+        return list(
+            result.scalars().all()
+        )
