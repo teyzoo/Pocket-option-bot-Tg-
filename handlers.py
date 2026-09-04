@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from aiogram import F, Router
@@ -16,10 +15,9 @@ from config import (
     SIGNAL_RESULT_LOSS,
     SIGNAL_RESULT_WIN,
 )
-from database import (
-    User,
-    get_session,
-)
+
+from database import User
+
 from keyboards import (
     back_to_main_keyboard,
     expiry_keyboard,
@@ -28,13 +26,21 @@ from keyboards import (
     pair_keyboard,
     settings_keyboard,
 )
+
 from messages import render_message
 from market import market_client
 from signal_engine import SignalEngine
-from signal_result_notifications import get_user_result_statistics
+from signal_result_notifications import (
+    get_user_result_statistics,
+)
 from signal_scanner import SignalScanner
-from signal_service import get_user_signal_history
+from signal_service import (
+    get_user_signal_history,
+    save_signal,
+    send_manual_signal,
+)
 from states import SignalStates
+
 from services import (
     ensure_privileged_user,
     get_user_access_status,
@@ -44,20 +50,22 @@ from services import (
     request_access,
     set_auto_signals,
 )
+
 from utils import (
     format_datetime,
     format_pair,
     format_price,
 )
 
+
 logger = logging.getLogger(__name__)
 
 router = Router()
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # SIGNAL SCANNER
-# ---------------------------------------------------------------------------
+# ============================================================
 
 scanner = SignalScanner(
     market=market_client,
@@ -65,18 +73,16 @@ scanner = SignalScanner(
 )
 
 
-# ---------------------------------------------------------------------------
-# ACCESS HELPERS
-# ---------------------------------------------------------------------------
+# ============================================================
+# ACCESS
+# ============================================================
 
-def is_owner(telegram_id: int) -> bool:
-    """
-    Проверка владельца.
-
-    Используем services.py как основной источник истины,
-    а config оставляем для совместимости старого кода.
-    """
-    telegram_id = int(telegram_id)
+def is_owner(
+    telegram_id: int,
+) -> bool:
+    telegram_id = int(
+        telegram_id
+    )
 
     return (
         is_owner_user(telegram_id)
@@ -84,8 +90,12 @@ def is_owner(telegram_id: int) -> bool:
     )
 
 
-def is_admin(telegram_id: int) -> bool:
-    telegram_id = int(telegram_id)
+def is_admin(
+    telegram_id: int,
+) -> bool:
+    telegram_id = int(
+        telegram_id
+    )
 
     return (
         is_admin_user(telegram_id)
@@ -102,21 +112,13 @@ async def get_current_user(
     )
 
 
-# ---------------------------------------------------------------------------
-# APPROVED CHECK
-# ---------------------------------------------------------------------------
-
 async def require_approved(
     message: Message,
 ) -> bool:
+
     telegram_id = int(
         message.from_user.id
     )
-
-    # -----------------------------------------------------------------------
-    # ADMIN / OWNER:
-    # доступ независимо от старого статуса в БД.
-    # -----------------------------------------------------------------------
 
     if is_admin(telegram_id):
         await ensure_privileged_user(
@@ -162,14 +164,10 @@ async def require_approved(
 async def _callback_approved(
     callback: CallbackQuery,
 ) -> bool:
+
     telegram_id = int(
         callback.from_user.id
     )
-
-    # -----------------------------------------------------------------------
-    # ADMIN / OWNER:
-    # callback тоже не должен блокироваться pending-статусом.
-    # -----------------------------------------------------------------------
 
     if is_admin(telegram_id):
         await ensure_privileged_user(
@@ -202,29 +200,23 @@ async def _callback_approved(
     return False
 
 
-# ---------------------------------------------------------------------------
-# /START
-# ---------------------------------------------------------------------------
+# ============================================================
+# START
+# ============================================================
 
-@router.message(CommandStart())
+@router.message(
+    CommandStart()
+)
 async def start_handler(
     message: Message,
     state: FSMContext,
 ) -> None:
+
     await state.clear()
 
     telegram_id = int(
         message.from_user.id
     )
-
-    # =======================================================================
-    # КРИТИЧЕСКИЙ ФИКС
-    #
-    # Проверяем owner/admin ПЕРЕД статусом БД.
-    #
-    # Если у владельца раньше был pending — он автоматически станет
-    # approved прямо сейчас.
-    # =======================================================================
 
     if is_admin(telegram_id):
         await ensure_privileged_user(
@@ -242,7 +234,9 @@ async def start_handler(
                 ),
             ),
             reply_markup=main_menu_keyboard(
-                is_owner=is_owner(telegram_id)
+                is_owner=is_owner(
+                    telegram_id
+                )
             ),
         )
 
@@ -270,7 +264,9 @@ async def start_handler(
                 ),
             ),
             reply_markup=main_menu_keyboard(
-                is_owner=is_owner(telegram_id)
+                is_owner=is_owner(
+                    telegram_id
+                )
             ),
         )
         return
@@ -299,7 +295,9 @@ async def start_handler(
                 ),
             ),
             reply_markup=main_menu_keyboard(
-                is_owner=is_owner(telegram_id)
+                is_owner=is_owner(
+                    telegram_id
+                )
             ),
         )
         return
@@ -327,9 +325,9 @@ async def start_handler(
     )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # FIND SIGNAL
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @router.message(
     F.text == "🔎 Найти сигнал"
@@ -338,6 +336,7 @@ async def find_signal_handler(
     message: Message,
     state: FSMContext,
 ) -> None:
+
     if not await require_approved(message):
         return
 
@@ -362,6 +361,7 @@ async def menu_signal_callback(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
+
     await callback.answer()
 
     if not await _callback_approved(callback):
@@ -381,9 +381,9 @@ async def menu_signal_callback(
     )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # MARKET
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @router.callback_query(
     F.data.startswith("market:")
@@ -392,6 +392,7 @@ async def choose_market_callback(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
+
     await callback.answer()
 
     if not await _callback_approved(callback):
@@ -427,9 +428,9 @@ async def choose_market_callback(
     )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # PAIR
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @router.callback_query(
     F.data.startswith("pair:")
@@ -438,6 +439,7 @@ async def choose_pair_callback(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
+
     await callback.answer()
 
     if not await _callback_approved(callback):
@@ -448,9 +450,17 @@ async def choose_pair_callback(
         1,
     )[1]
 
-    pair = _decode_pair(
-        encoded_pair
-    )
+    # --------------------------------------------------------
+    # ВСЕ ПАРЫ
+    # --------------------------------------------------------
+
+    if encoded_pair.strip().upper() == "ALL":
+        pair = "__ALL__"
+
+    else:
+        pair = _decode_pair(
+            encoded_pair
+        )
 
     if pair is None:
         await callback.message.answer(
@@ -476,9 +486,9 @@ async def choose_pair_callback(
     )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # EXPIRY
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @router.callback_query(
     F.data.startswith("expiry:")
@@ -487,6 +497,7 @@ async def choose_expiry_callback(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
+
     await callback.answer()
 
     if not await _callback_approved(callback):
@@ -499,6 +510,7 @@ async def choose_expiry_callback(
 
     if value == "any":
         expiry: int | str = "any"
+
     else:
         try:
             expiry = int(value)
@@ -521,7 +533,9 @@ async def choose_expiry_callback(
 
     data = await state.get_data()
 
-    pair = data.get("pair")
+    pair = data.get(
+        "pair"
+    )
 
     market = data.get(
         "market",
@@ -536,6 +550,21 @@ async def choose_expiry_callback(
         )
         return
 
+    is_all_pairs = (
+        str(pair).strip().upper()
+        in {
+            "__ALL__",
+            "ALL",
+            "ALL_PAIRS",
+        }
+    )
+
+    display_pair = (
+        "🌐 Все пары"
+        if is_all_pairs
+        else format_pair(pair)
+    )
+
     await state.set_state(
         SignalStates.analyzing
     )
@@ -543,7 +572,7 @@ async def choose_expiry_callback(
     await callback.message.edit_text(
         render_message(
             "analyzing",
-            pair=format_pair(pair),
+            pair=display_pair,
             expiry=(
                 "любое время"
                 if expiry == "any"
@@ -553,11 +582,24 @@ async def choose_expiry_callback(
     )
 
     try:
-        # -------------------------------------------------------------------
-        # Обычный срок
-        # -------------------------------------------------------------------
 
-        if isinstance(expiry, int):
+        # ========================================================
+        # ВСЕ ПАРЫ / ОБЫЧНОЕ ВРЕМЯ
+        # ========================================================
+
+        if is_all_pairs:
+            candidate = await scanner.scan_pair(
+                pair="ALL",
+                expiry_minutes=expiry,
+                market=market,
+                source="manual",
+            )
+
+        # ========================================================
+        # ОДНА ПАРА
+        # ========================================================
+
+        else:
             candidate = await scanner.scan_pair(
                 pair=pair,
                 expiry_minutes=expiry,
@@ -565,97 +607,23 @@ async def choose_expiry_callback(
                 source="manual",
             )
 
-        # -------------------------------------------------------------------
-        # Любое время
-        # -------------------------------------------------------------------
-
-        else:
-            expiry_candidates = range(
-                1,
-                21,
-            )
-
-            async def scan_expiry(
-                expiry_minutes: int,
-            ):
-                try:
-                    return await scanner.scan_pair(
-                        pair=pair,
-                        expiry_minutes=expiry_minutes,
-                        market=market,
-                        source="manual",
-                    )
-                except Exception:
-                    logger.exception(
-                        "Expiry scan failed: "
-                        "pair=%s expiry=%s",
-                        pair,
-                        expiry_minutes,
-                    )
-                    return None
-
-            results = await asyncio.gather(
-                *(
-                    scan_expiry(
-                        expiry_minutes
-                    )
-                    for expiry_minutes in expiry_candidates
-                )
-            )
-
-            candidates = [
-                result
-                for result in results
-                if result is not None
-            ]
-
-            if candidates:
-                candidate = max(
-                    candidates,
-                    key=lambda item: (
-                        float(
-                            getattr(
-                                item,
-                                "winrate",
-                                0,
-                            )
-                            or 0
-                        ),
-                        float(
-                            getattr(
-                                item,
-                                "quality",
-                                0,
-                            )
-                            or 0
-                        ),
-                        float(
-                            getattr(
-                                item,
-                                "confidence",
-                                0,
-                            )
-                            or 0
-                        ),
-                    ),
-                )
-            else:
-                candidate = None
+        # ========================================================
+        # НЕ НАЙДЕНО
+        # ========================================================
 
         if candidate is None:
             await callback.message.answer(
                 render_message(
                     "no_signal",
-                    pair=format_pair(pair),
+                    pair=display_pair,
                 ),
                 reply_markup=back_to_main_keyboard(),
             )
             return
 
-        chart_path = None
-
-        from signal_service import save_signal
-        from signal_service import send_manual_signal
+        # ========================================================
+        # СОХРАНЕНИЕ
+        # ========================================================
 
         signal = await save_signal(
             candidate
@@ -667,7 +635,7 @@ async def choose_expiry_callback(
             telegram_id=int(
                 callback.from_user.id
             ),
-            chart_path=chart_path,
+            chart_path=None,
         )
 
     except Exception:
@@ -686,9 +654,9 @@ async def choose_expiry_callback(
         await state.clear()
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # MARKET ANALYSIS
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @router.message(
     F.text == "📈 Анализ рынка"
@@ -697,6 +665,7 @@ async def analysis_market_handler(
     message: Message,
     state: FSMContext,
 ) -> None:
+
     if not await require_approved(message):
         return
 
@@ -718,9 +687,9 @@ async def analysis_market_handler(
     )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # HISTORY
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @router.message(
     F.text == "📜 История"
@@ -728,6 +697,7 @@ async def analysis_market_handler(
 async def history_handler(
     message: Message,
 ) -> None:
+
     if not await require_approved(message):
         return
 
@@ -759,6 +729,7 @@ async def history_handler(
     ]
 
     for signal in history:
+
         result_icon = {
             SIGNAL_RESULT_WIN: "✅",
             SIGNAL_RESULT_LOSS: "❌",
@@ -805,9 +776,9 @@ async def history_handler(
     )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # STATISTICS
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @router.message(
     F.text == "📊 Статистика"
@@ -815,6 +786,7 @@ async def history_handler(
 async def stats_handler(
     message: Message,
 ) -> None:
+
     if not await require_approved(message):
         return
 
@@ -844,9 +816,9 @@ async def stats_handler(
     )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # SETTINGS
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @router.message(
     F.text == "⚙️ Настройки"
@@ -854,6 +826,7 @@ async def stats_handler(
 async def settings_handler(
     message: Message,
 ) -> None:
+
     if not await require_approved(message):
         return
 
@@ -887,6 +860,7 @@ async def settings_handler(
 async def settings_auto_callback(
     callback: CallbackQuery,
 ) -> None:
+
     await callback.answer()
 
     if not await _callback_approved(callback):
@@ -925,9 +899,9 @@ async def settings_auto_callback(
     )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # MAIN MENU
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @router.callback_query(
     F.data == "menu:main"
@@ -936,6 +910,7 @@ async def main_menu_callback(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
+
     await callback.answer()
 
     await state.clear()
@@ -987,9 +962,9 @@ async def main_menu_callback(
     )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # PAIR MENU
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @router.callback_query(
     F.data == "menu:pairs"
@@ -998,6 +973,7 @@ async def menu_pairs_callback(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
+
     await callback.answer()
 
     if not await _callback_approved(callback):
@@ -1015,44 +991,75 @@ async def menu_pairs_callback(
     )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # PAIR DECODER
-# ---------------------------------------------------------------------------
+# ============================================================
 
 def _decode_pair(
     value: str,
 ) -> str | None:
-    normalized = value.upper()
 
-    mapping = {
-        pair.replace("/", "").upper(): pair
-        for pair in (
-            "EUR/USD",
-            "GBP/USD",
-            "USD/JPY",
-            "USD/CHF",
-            "AUD/USD",
-            "USD/CAD",
-            "NZD/USD",
-            "EUR/GBP",
-            "EUR/JPY",
-            "GBP/JPY",
-        )
-    }
-
-    return mapping.get(
-        normalized
+    normalized = (
+        str(value)
+        .strip()
+        .upper()
     )
 
+    if normalized in {
+        "ALL",
+        "ALL_PAIRS",
+    }:
+        return "__ALL__"
 
-# ---------------------------------------------------------------------------
+    # --------------------------------------------------------
+    # Берём реальные пары из config,
+    # а не дублируем список в handlers.py.
+    # --------------------------------------------------------
+
+    try:
+        from config import NORMAL_PAIRS
+
+        mapping = {
+            pair.replace(
+                "/",
+                "",
+            ).upper(): pair
+            for pair in NORMAL_PAIRS
+        }
+
+        return mapping.get(
+            normalized
+        )
+
+    except Exception:
+        # Fallback для совместимости
+        mapping = {
+            "EURUSD": "EUR/USD",
+            "GBPUSD": "GBP/USD",
+            "USDJPY": "USD/JPY",
+            "USDCHF": "USD/CHF",
+            "AUDUSD": "AUD/USD",
+            "USDCAD": "USD/CAD",
+            "NZDUSD": "NZD/USD",
+            "EURGBP": "EUR/GBP",
+            "EURJPY": "EUR/JPY",
+            "GBPJPY": "GBP/JPY",
+        }
+
+        return mapping.get(
+            normalized
+        )
+
+
+# ============================================================
 # FALLBACK
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @router.message()
 async def fallback_handler(
     message: Message,
 ) -> None:
+
     if not await require_approved(message):
         return
 
