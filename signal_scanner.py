@@ -39,6 +39,26 @@ ALL_PAIRS_VALUES = {
 
 
 class SignalScanner:
+    """
+    Быстрый сканер рынка.
+
+    Основные возможности:
+
+    - одна конкретная пара;
+    - все пары;
+    - конкретная экспирация 1-20 минут;
+    - любое время 1-20 минут;
+    - параллельная загрузка свечей;
+    - параллельный анализ экспираций;
+    - выбор лучшего сигнала;
+    - сохранение совместимости со старым API.
+    """
+
+    # Максимальное количество CPU-анализов одновременно.
+
+    # Слишком большое значение может перегрузить бесплатный
+    # Render-инстанс, поэтому держим разумный предел.
+    ANALYSIS_CONCURRENCY = 8
 
     def __init__(
         self,
@@ -58,6 +78,16 @@ class SignalScanner:
             else SignalEngine()
         )
 
+        self._analysis_semaphore = (
+            asyncio.Semaphore(
+                self.ANALYSIS_CONCURRENCY
+            )
+        )
+
+    # ========================================================
+    # NORMALIZATION
+    # ========================================================
+
     @staticmethod
     def _normalize_expiry(
         expiry_minutes,
@@ -67,6 +97,7 @@ class SignalScanner:
             value = int(
                 expiry_minutes
             )
+
         except (
             TypeError,
             ValueError,
@@ -116,11 +147,20 @@ class SignalScanner:
             in ALL_PAIRS_VALUES
         )
 
+    # ========================================================
+    # LOAD ONE PAIR
+    # ========================================================
+
     async def _load_pair(
         self,
         pair: str,
         market: str,
     ):
+        """
+        Загружает свечи одной пары.
+
+        Метод сохранён для совместимости.
+        """
 
         if not pair_selector.is_allowed(
             pair,
@@ -134,6 +174,7 @@ class SignalScanner:
                 interval="1min",
                 outputsize=MAX_CANDLES,
             )
+
         except Exception as exc:
             logger.exception(
                 "Failed to load candles: "
@@ -150,6 +191,7 @@ class SignalScanner:
             filtered = await candle_filter_service.apply(
                 df
             )
+
         except Exception as exc:
             logger.exception(
                 "Candle filter failed: "
@@ -167,30 +209,192 @@ class SignalScanner:
 
         return filtered
 
-    async def _analyze_pair_any(
+    # ========================================================
+    # LOAD MANY PAIRS
+    # ========================================================
+
+    async def _load_pairs(
+        self,
+        pair_list: list[str],
+        market: str,
+    ) -> dict[str, object]:
+        """
+        Загружает свечи всех пар максимально быстро.
+
+        Если MarketClient поддерживает get_candles_many(),
+        используется единый параллельный загрузчик.
+
+        Есть fallback на обычные запросы для совместимости
+        с кастомными MarketClient.
+        """
+
+        allowed_pairs = [
+            pair
+            for pair in pair_list
+            if pair_selector.is_allowed(
+                pair,
+                market,
+            )
+        ]
+
+        if not allowed_pairs:
+            return {}
+
+        # ----------------------------------------------------
+        # FAST PATH
+        # ----------------------------------------------------
+
+        get_many = getattr(
+            self.market,
+            "get_candles_many",
+            None,
+        )
+
+        if callable(get_many):
+            try:
+                raw_data = await get_many(
+                    symbols=allowed_pairs,
+                    interval="1min",
+                    outputsize=MAX_CANDLES,
+                )
+
+                if raw_data is None:
+                    raw_data = {}
+
+            except Exception as exc:
+                logger.exception(
+                    "Parallel candle loading failed: "
+                    "error=%s",
+                    type(exc).__name__,
+                )
+                raw_data = {}
+
+        else:
+            raw_data = {}
+
+            async def load_fallback(
+                pair: str,
+            ) -> tuple[str, object | None]:
+
+                try:
+                    df = await self.market.get_candles(
+                        symbol=pair,
+                        interval="1min",
+                        outputsize=MAX_CANDLES,
+                    )
+
+                    return pair, df
+
+                except Exception as exc:
+                    logger.exception(
+                        "Failed to load candles: "
+                        "pair=%s error=%s",
+                        pair,
+                        type(exc).__name__,
+                    )
+
+                    return pair, None
+
+            results = await asyncio.gather(
+                *(
+                    load_fallback(pair)
+                    for pair in allowed_pairs
+                ),
+                return_exceptions=False,
+            )
+
+            raw_data = {
+                pair: df
+                for pair, df in results
+                if df is not None
+            }
+
+        # ----------------------------------------------------
+        # FILTER IN PARALLEL
+        # ----------------------------------------------------
+
+        async def filter_pair(
+            pair: str,
+            df,
+        ) -> tuple[str, object | None]:
+
+            if df is None:
+                return pair, None
+
+            try:
+                if df.empty:
+                    return pair, None
+
+            except Exception:
+                return pair, None
+
+            try:
+                filtered = await candle_filter_service.apply(
+                    df
+                )
+
+            except Exception as exc:
+                logger.exception(
+                    "Candle filter failed: "
+                    "pair=%s error=%s",
+                    pair,
+                    type(exc).__name__,
+                )
+                return pair, None
+
+            if filtered is None:
+                return pair, None
+
+            try:
+                if len(filtered) < MIN_CANDLES_REQUIRED:
+                    return pair, None
+
+            except Exception:
+                return pair, None
+
+            return pair, filtered
+
+        filter_results = await asyncio.gather(
+            *(
+                filter_pair(
+                    pair,
+                    raw_data.get(pair),
+                )
+                for pair in allowed_pairs
+            ),
+            return_exceptions=False,
+        )
+
+        return {
+            pair: df
+            for pair, df in filter_results
+            if df is not None
+        }
+
+    # ========================================================
+    # ENGINE ANALYSIS
+    # ========================================================
+
+    async def _run_engine(
         self,
         pair: str,
         market: str,
+        df,
+        expiry: int,
         source: str,
-    ) -> list[SignalCandidate]:
+    ) -> SignalCandidate | None:
+        """
+        Запускает синхронный SignalEngine в отдельном потоке.
 
-        df = await self._load_pair(
-            pair,
-            market,
-        )
+        Это важно, потому что analyze() выполняет pandas/
+        backtest и может блокировать event loop.
+        """
 
-        if df is None:
-            return []
-
-        candidates = []
-
-        for expiry in range(
-            MIN_EXPIRY_MINUTES,
-            MAX_EXPIRY_MINUTES + 1,
-        ):
+        async with self._analysis_semaphore:
 
             try:
-                candidate = self.engine.analyze(
+                return await asyncio.to_thread(
+                    self.engine.analyze,
                     pair=pair,
                     market=market,
                     df=df,
@@ -198,21 +402,91 @@ class SignalScanner:
                     source=source,
                 )
 
-                if candidate is not None:
-                    candidates.append(
-                        candidate
-                    )
-
             except Exception as exc:
                 logger.exception(
-                    "Expiry analysis failed: "
+                    "Engine analysis failed: "
                     "pair=%s expiry=%s error=%s",
                     pair,
                     expiry,
                     type(exc).__name__,
                 )
 
-        return candidates
+                return None
+
+    # ========================================================
+    # ANY EXPIRY
+    # ========================================================
+
+    async def _analyze_pair_any(
+        self,
+        pair: str,
+        market: str,
+        source: str,
+        df=None,
+    ) -> list[SignalCandidate]:
+        """
+        Проверяет ВСЕ экспирации 1-20 минут параллельно.
+
+        Раньше:
+
+            1 -> ждём
+            2 -> ждём
+            3 -> ждём
+            ...
+            20 -> ждём
+
+        Теперь:
+
+            1 ─┐
+            2 ─┤
+            3 ─┤
+            ...
+            20 ─┘
+               ↓
+            лучший результат
+        """
+
+        if df is None:
+            df = await self._load_pair(
+                pair,
+                market,
+            )
+
+        if df is None:
+            return []
+
+        expiries = list(
+            range(
+                MIN_EXPIRY_MINUTES,
+                MAX_EXPIRY_MINUTES + 1,
+            )
+        )
+
+        tasks = [
+            self._run_engine(
+                pair=pair,
+                market=market,
+                df=df,
+                expiry=expiry,
+                source=source,
+            )
+            for expiry in expiries
+        ]
+
+        results = await asyncio.gather(
+            *tasks,
+            return_exceptions=False,
+        )
+
+        return [
+            candidate
+            for candidate in results
+            if candidate is not None
+        ]
+
+    # ========================================================
+    # FIXED EXPIRY
+    # ========================================================
 
     async def _analyze_pair_fixed(
         self,
@@ -220,33 +494,29 @@ class SignalScanner:
         market: str,
         expiry: int,
         source: str,
+        df=None,
     ) -> SignalCandidate | None:
 
-        df = await self._load_pair(
-            pair,
-            market,
-        )
+        if df is None:
+            df = await self._load_pair(
+                pair,
+                market,
+            )
 
         if df is None:
             return None
 
-        try:
-            return self.engine.analyze(
-                pair=pair,
-                market=market,
-                df=df,
-                expiry_minutes=expiry,
-                source=source,
-            )
-        except Exception as exc:
-            logger.exception(
-                "Pair analysis failed: "
-                "pair=%s expiry=%s error=%s",
-                pair,
-                expiry,
-                type(exc).__name__,
-            )
-            return None
+        return await self._run_engine(
+            pair=pair,
+            market=market,
+            df=df,
+            expiry=expiry,
+            source=source,
+        )
+
+    # ========================================================
+    # SINGLE PAIR
+    # ========================================================
 
     async def scan_pair(
         self,
@@ -269,10 +539,10 @@ class SignalScanner:
 
         if expiry is not None:
             return await self._analyze_pair_fixed(
-                pair,
-                market,
-                expiry,
-                source,
+                pair=pair,
+                market=market,
+                expiry=expiry,
+                source=source,
             )
 
         if self._is_any_expiry(
@@ -280,9 +550,9 @@ class SignalScanner:
         ):
             candidates = (
                 await self._analyze_pair_any(
-                    pair,
-                    market,
-                    source,
+                    pair=pair,
+                    market=market,
+                    source=source,
                 )
             )
 
@@ -291,6 +561,10 @@ class SignalScanner:
             )
 
         return None
+
+    # ========================================================
+    # FULL SCAN
+    # ========================================================
 
     async def scan(
         self,
@@ -306,11 +580,24 @@ class SignalScanner:
                 market
             )
 
-        pair_list = list(pairs)
+        pair_list = list(
+            dict.fromkeys(
+                str(pair)
+                for pair in pairs
+                if pair
+            )
+        )
+
+        # ----------------------------------------------------
+        # LIMIT
+        # ----------------------------------------------------
 
         if max_pairs is not None:
             try:
-                limit = int(max_pairs)
+                limit = int(
+                    max_pairs
+                )
+
             except (
                 TypeError,
                 ValueError,
@@ -340,83 +627,113 @@ class SignalScanner:
             expiry_minutes
         )
 
+        # ====================================================
+        # LOAD ALL PAIRS ONCE
+        # ====================================================
+
+        loaded = await self._load_pairs(
+            pair_list=pair_list,
+            market=market,
+        )
+
+        if not loaded:
+            logger.info(
+                "No valid market data: "
+                "market=%s pairs=%d",
+                market,
+                len(pair_list),
+            )
+            return None
+
+        # ====================================================
+        # FIXED EXPIRY
+        # ====================================================
+
         if expiry is not None:
 
+            tasks = [
+                self._analyze_pair_fixed(
+                    pair=pair,
+                    market=market,
+                    expiry=expiry,
+                    source=source,
+                    df=loaded.get(pair),
+                )
+                for pair in loaded
+            ]
+
             results = await asyncio.gather(
-                *[
-                    self._analyze_pair_fixed(
-                        pair,
-                        market,
-                        expiry,
-                        source,
-                    )
-                    for pair in pair_list
-                ],
-                return_exceptions=True,
+                *tasks,
+                return_exceptions=False,
             )
 
-            candidates = []
+            candidates = [
+                candidate
+                for candidate in results
+                if candidate is not None
+            ]
 
-            for pair, result in zip(
-                pair_list,
-                results,
-            ):
-                if isinstance(
-                    result,
-                    Exception,
-                ):
-                    logger.error(
-                        "Pair scan exception: "
-                        "pair=%s error=%s",
-                        pair,
-                        type(result).__name__,
-                    )
-                    continue
-
-                if result is not None:
-                    candidates.append(result)
-
-            return self._select_best(
+            best = self._select_best(
                 candidates
             )
+
+            if best is None:
+                logger.info(
+                    "Fixed scan produced no candidate: "
+                    "market=%s pairs=%d expiry=%d",
+                    market,
+                    len(pair_list),
+                    expiry,
+                )
+
+            else:
+                logger.info(
+                    "Best fixed signal: "
+                    "pair=%s direction=%s "
+                    "expiry=%s quality=%.2f "
+                    "confidence=%.2f winrate=%.2f",
+                    best.pair,
+                    best.direction,
+                    best.expiry_minutes,
+                    best.quality,
+                    best.confidence,
+                    best.winrate,
+                )
+
+            return best
+
+        # ====================================================
+        # ANY EXPIRY
+        # ====================================================
 
         if self._is_any_expiry(
             expiry_minutes
         ):
 
+            tasks = [
+                self._analyze_pair_any(
+                    pair=pair,
+                    market=market,
+                    source=source,
+                    df=loaded.get(pair),
+                )
+                for pair in loaded
+            ]
+
             results = await asyncio.gather(
-                *[
-                    self._analyze_pair_any(
-                        pair,
-                        market,
-                        source,
-                    )
-                    for pair in pair_list
-                ],
-                return_exceptions=True,
+                *tasks,
+                return_exceptions=False,
             )
 
-            candidates = []
+            candidates: list[
+                SignalCandidate
+            ] = []
 
-            for pair, result in zip(
-                pair_list,
-                results,
-            ):
-                if isinstance(
-                    result,
-                    Exception,
-                ):
-                    logger.error(
-                        "ANY pair scan exception: "
-                        "pair=%s error=%s",
-                        pair,
-                        type(result).__name__,
+            for result in results:
+                if result:
+                    candidates.extend(
+                        result
                     )
-                    continue
-
-                candidates.extend(
-                    result
-                )
 
             best = self._select_best(
                 candidates
@@ -429,6 +746,7 @@ class SignalScanner:
                     market,
                     len(pair_list),
                 )
+
             else:
                 logger.info(
                     "Best ANY signal: "
@@ -447,6 +765,10 @@ class SignalScanner:
 
         return None
 
+    # ========================================================
+    # SELECT BEST
+    # ========================================================
+
     @staticmethod
     def _select_best(
         candidates: list[SignalCandidate],
@@ -454,6 +776,11 @@ class SignalScanner:
 
         if not candidates:
             return None
+
+        # Сначала качество.
+        # Затем исторический WINRATE.
+        # Затем confidence.
+        # Затем количество подтверждений.
 
         return max(
             candidates,
