@@ -33,18 +33,20 @@ class SignalEngine:
                 ↓
         WINRATE >= заданного порога
                 ↓
-        QUALITY / CONFIDENCE
-                ↓
         SignalCandidate
 
-    Важный принцип:
-        мы НЕ создаём искусственный сигнал.
+    ВАЖНО:
 
-        Если текущая ситуация не подтверждена исторически,
-        возвращается None.
+        Исторический WINRATE >= MIN_SIGNAL_WINRATE
+        является главным обязательным фильтром.
 
-    При этом текущий сигнал и backtest используют
-    одну и ту же систему оценки из backtest.py.
+        Confidence / Quality / Calibrator используются
+        как дополнительные характеристики кандидата,
+        но не должны повторно блокировать сигнал после
+        прохождения исторического WINRATE.
+
+    Это позволяет боту действительно выдавать сигналы,
+    сохраняя требование исторического WINRATE >= 75%.
     """
 
     def __init__(
@@ -57,9 +59,7 @@ class SignalEngine:
         self.min_winrate = float(min_winrate)
         self.min_confidence = float(min_confidence)
         self.min_quality = float(min_quality)
-        self.min_confirmations = int(
-            min_confirmations
-        )
+        self.min_confirmations = int(min_confirmations)
 
     # ============================================================
     # PUBLIC API
@@ -76,8 +76,12 @@ class SignalEngine:
         """
         Анализирует одну пару для конкретного времени экспирации.
 
-        Возвращает SignalCandidate только при выполнении
-        всех обязательных условий.
+        Главный обязательный критерий:
+
+            historical WINRATE >= min_winrate
+
+        Confidence и Quality вычисляются, но после прохождения
+        исторического WINRATE больше не являются причиной отказа.
         """
 
         # --------------------------------------------------------
@@ -102,14 +106,12 @@ class SignalEngine:
         if df is None or df.empty:
             return None
 
-        prepared = self._prepare_dataframe(
-            df
-        )
+        prepared = self._prepare_dataframe(df)
 
         if prepared is None:
             return None
 
-        # Для EMA 50 + backtest нужна нормальная история.
+        # Для EMA / индикаторов / backtest нужна история.
         if len(prepared) < 80:
             return None
 
@@ -118,9 +120,7 @@ class SignalEngine:
         # --------------------------------------------------------
 
         try:
-            current = latest_indicators(
-                prepared
-            )
+            current = latest_indicators(prepared)
         except Exception:
             return None
 
@@ -128,8 +128,9 @@ class SignalEngine:
             return None
 
         # --------------------------------------------------------
-        # Используем ТОЧНО ту же систему,
-        # что и backtest.py.
+        # ТЕКУЩЕЕ НАПРАВЛЕНИЕ
+        #
+        # Используем ту же систему оценки, что и backtest.py.
         # --------------------------------------------------------
 
         try:
@@ -140,9 +141,7 @@ class SignalEngine:
                 confirmations,
                 current_confidence,
                 current_reasons,
-            ) = evaluate_row(
-                current_row
-            )
+            ) = evaluate_row(current_row)
 
         except Exception:
             return None
@@ -153,11 +152,15 @@ class SignalEngine:
         }:
             return None
 
+        # Оставляем минимальное количество подтверждений.
+        #
+        # Это не WINRATE-фильтр, а защита от ситуации,
+        # когда текущее направление практически не определено.
         if confirmations < self.min_confirmations:
             return None
 
         # --------------------------------------------------------
-        # Исторический backtest
+        # ИСТОРИЧЕСКИЙ BACKTEST
         # --------------------------------------------------------
 
         try:
@@ -178,6 +181,7 @@ class SignalEngine:
                 "decisive_trades",
                 0,
             )
+            or 0
         )
 
         wins = int(
@@ -186,6 +190,7 @@ class SignalEngine:
                 "wins",
                 0,
             )
+            or 0
         )
 
         losses = int(
@@ -194,6 +199,7 @@ class SignalEngine:
                 "losses",
                 0,
             )
+            or 0
         )
 
         draws = int(
@@ -202,11 +208,19 @@ class SignalEngine:
                 "draws",
                 0,
             )
+            or 0
         )
 
-        # Нельзя считать WINRATE по нулевой выборке.
+        # --------------------------------------------------------
+        # МИНИМАЛЬНЫЙ РАЗМЕР ИСТОРИЧЕСКОЙ ВЫБОРКИ
+        # --------------------------------------------------------
+
         if trades < 10:
             return None
+
+        # --------------------------------------------------------
+        # ИСТОРИЧЕСКИЙ WINRATE
+        # --------------------------------------------------------
 
         historical_winrate = float(
             getattr(
@@ -218,34 +232,32 @@ class SignalEngine:
         )
 
         # --------------------------------------------------------
-        # ГЛАВНЫЙ ФИЛЬТР
+        # ГЛАВНЫЙ И ЕДИНСТВЕННЫЙ ЖЁСТКИЙ WINRATE-ФИЛЬТР
         #
-        # Именно здесь сохраняем требование пользователя:
-        # исторический WINRATE >= 75%.
+        # Ниже 75% не отправляем.
+        # 75% и выше разрешаем.
         # --------------------------------------------------------
 
-        if (
-            historical_winrate
-            < self.min_winrate
-        ):
+        if historical_winrate < self.min_winrate:
             return None
 
         # --------------------------------------------------------
-        # Probability calibrator
+        # PROBABILITY CALIBRATOR
         #
-        # Он использует тот же backtest,
-        # поэтому не подменяем реальную статистику.
+        # Считаем его для metadata.
+        #
+        # ВАЖНО:
+        # calibrator больше НЕ может отменить сигнал,
+        # если исторический WINRATE уже >= 75%.
         # --------------------------------------------------------
 
         calibrated_winrate = historical_winrate
 
         try:
-            estimate = (
-                probability_calibrator.estimate(
-                    prepared,
-                    expiry,
-                    direction=direction,
-                )
+            estimate = probability_calibrator.estimate(
+                prepared,
+                expiry,
+                direction=direction,
             )
 
             if estimate is not None:
@@ -259,34 +271,29 @@ class SignalEngine:
                 )
 
                 if estimate_winrate > 0:
-                    calibrated_winrate = (
-                        estimate_winrate
-                    )
+                    calibrated_winrate = estimate_winrate
 
         except Exception:
-            # Если calibrator не сработал,
-            # исторический backtest всё равно остаётся
-            # действительным источником статистики.
-            calibrated_winrate = (
-                historical_winrate
-            )
+            calibrated_winrate = historical_winrate
 
         # --------------------------------------------------------
-        # Итоговый WINRATE.
+        # EFFECTIVE WINRATE
         #
-        # Берём более консервативное значение.
+        # Для самого сигнала используем исторический WINRATE.
+        #
+        # Причина:
+        # пользовательское требование относится именно
+        # к историческому backtest.
+        #
+        # Calibrated WINRATE сохраняется отдельно в metadata.
         # --------------------------------------------------------
 
-        effective_winrate = min(
-            historical_winrate,
-            calibrated_winrate,
-        )
-
-        if effective_winrate < self.min_winrate:
-            return None
+        effective_winrate = historical_winrate
 
         # --------------------------------------------------------
         # CONFIDENCE
+        #
+        # Вычисляем, но НЕ блокируем сигнал.
         # --------------------------------------------------------
 
         confidence = self._calculate_confidence(
@@ -295,11 +302,10 @@ class SignalEngine:
             confirmations=confirmations,
         )
 
-        if confidence < self.min_confidence:
-            return None
-
         # --------------------------------------------------------
         # QUALITY
+        #
+        # Вычисляем, но НЕ блокируем сигнал.
         # --------------------------------------------------------
 
         quality = self._calculate_quality(
@@ -309,9 +315,6 @@ class SignalEngine:
             confirmations=confirmations,
             trades=trades,
         )
-
-        if quality < self.min_quality:
-            return None
 
         # --------------------------------------------------------
         # ENTRY PRICE
@@ -323,9 +326,7 @@ class SignalEngine:
 
         if price is None:
             price = self._safe_float(
-                prepared.iloc[-1].get(
-                    "close"
-                )
+                prepared.iloc[-1].get("close")
             )
 
         if price is None:
@@ -335,9 +336,7 @@ class SignalEngine:
         # ВРЕМЯ СОЗДАНИЯ / ЭКСПИРАЦИИ
         # --------------------------------------------------------
 
-        created_at = datetime.now(
-            timezone.utc
-        )
+        created_at = datetime.now(timezone.utc)
 
         expires_at = (
             created_at
@@ -351,8 +350,7 @@ class SignalEngine:
         # --------------------------------------------------------
 
         reasons = list(
-            current_reasons
-            or []
+            current_reasons or []
         )
 
         reasons = self._build_reasons(
@@ -396,6 +394,24 @@ class SignalEngine:
             "backtest_wins": wins,
             "backtest_losses": losses,
             "backtest_draws": draws,
+            "minimum_required_winrate": round(
+                self.min_winrate,
+                2,
+            ),
+            "minimum_required_confidence": round(
+                self.min_confidence,
+                2,
+            ),
+            "minimum_required_quality": round(
+                self.min_quality,
+                2,
+            ),
+            "minimum_required_confirmations": (
+                self.min_confirmations
+            ),
+            "confidence_filter_blocking": False,
+            "quality_filter_blocking": False,
+            "calibrator_filter_blocking": False,
             "signal_candle_time": self._get_last_candle_time(
                 prepared
             ),
@@ -419,8 +435,11 @@ class SignalEngine:
                 quality,
                 2,
             ),
+            # КРИТИЧЕСКИ ВАЖНО:
+            # показываем исторический WINRATE,
+            # а не заниженный calibrator.
             winrate=round(
-                effective_winrate,
+                historical_winrate,
                 2,
             ),
             entry_price=price,
@@ -535,8 +554,11 @@ class SignalEngine:
         Confidence текущей ситуации.
 
         Не делаем искусственный разгон значения.
-        Историческая статистика и текущие подтверждения
-        влияют на итог.
+
+        Confidence используется как характеристика
+        качества кандидата, но не является дополнительным
+        жёстким фильтром после прохождения исторического
+        WINRATE.
         """
 
         current = max(
@@ -601,14 +623,12 @@ class SignalEngine:
         trades: int,
     ) -> float:
         """
-        Итоговое качество.
+        Итоговое качество кандидата.
 
-        Чем сильнее текущая ситуация и чем лучше
-        историческая статистика, тем выше score.
+        Quality используется для ранжирования сигналов.
 
-        Дополнительные сделки повышают качество,
-        но не могут искусственно превратить плохой
-        исторический результат в хороший.
+        Она НЕ может отменить сигнал, если исторический
+        WINRATE уже соответствует минимальному порогу.
         """
 
         current_component = max(
@@ -653,7 +673,7 @@ class SignalEngine:
             * 100.0
         )
 
-        # Небольшой бонус за размер выборки.
+        # Бонус за размер исторической выборки.
         if trades >= 30:
             sample_bonus = 5.0
         elif trades >= 20:
