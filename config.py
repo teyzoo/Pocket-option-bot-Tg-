@@ -6,7 +6,6 @@ from typing import Final
 
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
 
@@ -25,10 +24,12 @@ def _get(name: str, default: str | None = None) -> str | None:
 
 def _get_required(name: str) -> str:
     value = _get(name)
+
     if not value:
         raise RuntimeError(
             f"Environment variable {name} is required"
         )
+
     return value
 
 
@@ -76,7 +77,7 @@ def _get_bool(name: str, default: bool) -> bool:
 
 
 def _get_int_list(name: str) -> list[int]:
-    value = _get(name, "")
+    value = _get(name, "") or ""
 
     if not value:
         return []
@@ -115,7 +116,10 @@ ADMIN_IDS: Final[list[int]] = _get_int_list("ADMIN_IDS")
 
 OWNER_IDS: Final[list[int]] = _get_int_list("OWNER_IDS")
 
-HOST: Final[str] = _get("HOST", "0.0.0.0") or "0.0.0.0"
+HOST: Final[str] = (
+    _get("HOST", "0.0.0.0")
+    or "0.0.0.0"
+)
 
 PORT: Final[int] = max(
     1,
@@ -123,7 +127,8 @@ PORT: Final[int] = max(
 )
 
 HEALTH_PATH: Final[str] = (
-    _get("HEALTH_PATH", "/health") or "/health"
+    _get("HEALTH_PATH", "/health")
+    or "/health"
 )
 
 TIMEZONE: Final[str] = (
@@ -167,10 +172,7 @@ MIN_SIGNAL_CONFIRMATIONS: Final[int] = max(
 
 
 # ============================================================
-# INDICATOR SCORES
-#
-# Максимальная сумма = 85.
-# SignalEngine использует её для расчёта confidence.
+# SIGNAL SCORES
 # ============================================================
 
 EMA_SCORE: Final[float] = _get_float(
@@ -218,10 +220,10 @@ MIN_EXPIRY_MINUTES: Final[int] = max(
     _get_int("MIN_EXPIRY_MINUTES", 1),
 )
 
-MAX_EXPIRY_MINUTES: Final[int] = max(
-    MIN_EXPIRY_MINUTES,
-    min(
-        20,
+MAX_EXPIRY_MINUTES: Final[int] = min(
+    20,
+    max(
+        MIN_EXPIRY_MINUTES,
         _get_int("MAX_EXPIRY_MINUTES", 20),
     ),
 )
@@ -260,7 +262,7 @@ TWELVE_DATA_TIMEOUT_SECONDS: Final[float] = max(
     ),
 )
 
-# Compatibility alias.
+# Старое имя, которое используется другими модулями.
 TWELVE_DATA_TIMEOUT: Final[float] = (
     TWELVE_DATA_TIMEOUT_SECONDS
 )
@@ -393,10 +395,27 @@ EMA_TREND_PERIOD: Final[int] = max(
     _get_int("EMA_TREND_PERIOD", 50),
 )
 
+# ------------------------------------------------------------
+# COMPATIBILITY ALIASES
+# ------------------------------------------------------------
+
+EMA_FAST: Final[int] = EMA_FAST_PERIOD
+EMA_SLOW: Final[int] = EMA_SLOW_PERIOD
+EMA_TREND: Final[int] = EMA_TREND_PERIOD
+
+
+# RSI
+
 RSI_PERIOD: Final[int] = max(
     2,
     _get_int("RSI_PERIOD", 14),
 )
+
+# Возможное старое имя.
+RSI_LENGTH: Final[int] = RSI_PERIOD
+
+
+# MACD
 
 MACD_FAST_PERIOD: Final[int] = max(
     1,
@@ -413,6 +432,14 @@ MACD_SIGNAL_PERIOD: Final[int] = max(
     _get_int("MACD_SIGNAL_PERIOD", 9),
 )
 
+# Compatibility aliases.
+MACD_FAST: Final[int] = MACD_FAST_PERIOD
+MACD_SLOW: Final[int] = MACD_SLOW_PERIOD
+MACD_SIGNAL: Final[int] = MACD_SIGNAL_PERIOD
+
+
+# Bollinger Bands
+
 BOLLINGER_PERIOD: Final[int] = max(
     2,
     _get_int("BOLLINGER_PERIOD", 20),
@@ -423,6 +450,13 @@ BOLLINGER_STD: Final[float] = max(
     _get_float("BOLLINGER_STD", 2.0),
 )
 
+# Compatibility aliases.
+BB_PERIOD: Final[int] = BOLLINGER_PERIOD
+BB_STD: Final[float] = BOLLINGER_STD
+
+
+# Stochastic
+
 STOCHASTIC_PERIOD: Final[int] = max(
     2,
     _get_int("STOCHASTIC_PERIOD", 14),
@@ -432,6 +466,13 @@ STOCHASTIC_SMOOTH: Final[int] = max(
     1,
     _get_int("STOCHASTIC_SMOOTH", 3),
 )
+
+# Compatibility aliases.
+STOCHASTIC_K_PERIOD: Final[int] = STOCHASTIC_PERIOD
+STOCHASTIC_D_PERIOD: Final[int] = STOCHASTIC_SMOOTH
+
+
+# ATR
 
 ATR_PERIOD: Final[int] = max(
     2,
@@ -520,7 +561,8 @@ DB_POOL_RECYCLE: Final[int] = max(
 # ============================================================
 
 LOG_LEVEL: Final[str] = (
-    _get("LOG_LEVEL", "INFO") or "INFO"
+    _get("LOG_LEVEL", "INFO")
+    or "INFO"
 ).upper()
 
 
@@ -562,7 +604,6 @@ RESULT_LOSS: Final[str] = "LOSS"
 RESULT_DRAW: Final[str] = "DRAW"
 RESULT_CANCELLED: Final[str] = "CANCELLED"
 
-# Compatibility aliases.
 SIGNAL_RESULT_PENDING: Final[str] = RESULT_PENDING
 SIGNAL_RESULT_WIN: Final[str] = RESULT_WIN
 SIGNAL_RESULT_LOSS: Final[str] = RESULT_LOSS
@@ -579,7 +620,6 @@ USER_APPROVED: Final[str] = "APPROVED"
 USER_REJECTED: Final[str] = "REJECTED"
 USER_BLACKLISTED: Final[str] = "BLACKLISTED"
 
-# Compatibility aliases.
 ACCESS_PENDING: Final[str] = USER_PENDING
 ACCESS_APPROVED: Final[str] = USER_APPROVED
 ACCESS_REJECTED: Final[str] = USER_REJECTED
@@ -612,7 +652,7 @@ DIRECTION_DOWN: Final[str] = "DOWN"
 
 
 # ============================================================
-# SNAPSHOT
+# CONFIG SNAPSHOT
 # ============================================================
 
 @dataclass(frozen=True)
@@ -701,7 +741,7 @@ def validate_config() -> None:
 
 
 # ============================================================
-# GLOBAL CONFIG OBJECT
+# GLOBAL CONFIG
 # ============================================================
 
 CONFIG: Final[ConfigSnapshot] = ConfigSnapshot(
