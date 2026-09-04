@@ -19,6 +19,7 @@ class ProbabilityEstimate:
 
 
 class ProbabilityCalibrator:
+
     def __init__(
         self,
         minimum_trades: int = 10,
@@ -41,7 +42,9 @@ class ProbabilityCalibrator:
         self,
         df: pd.DataFrame,
         expiry_minutes: int,
+        direction: str | None = None,
     ) -> ProbabilityEstimate:
+
         if df is None or df.empty:
             return ProbabilityEstimate(
                 winrate=0.0,
@@ -67,6 +70,7 @@ class ProbabilityCalibrator:
             result: BacktestResult = run_backtest(
                 df,
                 expiry,
+                direction=direction,
             )
         except Exception:
             return ProbabilityEstimate(
@@ -119,6 +123,7 @@ class ProbabilityCalibrator:
         self,
         estimate: ProbabilityEstimate,
     ) -> bool:
+
         if estimate is None:
             return False
 
