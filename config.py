@@ -8,10 +8,7 @@ from typing import Final
 # HELPERS
 # ============================================================
 
-def _get_str(
-    name: str,
-    default: str = "",
-) -> str:
+def _get_str(name: str, default: str = "") -> str:
     value = os.getenv(name)
 
     if value is None:
@@ -20,10 +17,7 @@ def _get_str(
     return value.strip()
 
 
-def _get_int(
-    name: str,
-    default: int,
-) -> int:
+def _get_int(name: str, default: int) -> int:
     value = os.getenv(name)
 
     if value is None or not value.strip():
@@ -35,10 +29,7 @@ def _get_int(
         return default
 
 
-def _get_float(
-    name: str,
-    default: float,
-) -> float:
+def _get_float(name: str, default: float) -> float:
     value = os.getenv(name)
 
     if value is None or not value.strip():
@@ -50,35 +41,18 @@ def _get_float(
         return default
 
 
-def _get_bool(
-    name: str,
-    default: bool,
-) -> bool:
+def _get_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
 
     if value is None:
         return default
 
-    normalized = value.strip().lower()
+    value = value.strip().lower()
 
-    if normalized in {
-        "1",
-        "true",
-        "yes",
-        "y",
-        "on",
-        "да",
-    }:
+    if value in {"1", "true", "yes", "y", "on", "да"}:
         return True
 
-    if normalized in {
-        "0",
-        "false",
-        "no",
-        "n",
-        "off",
-        "нет",
-    }:
+    if value in {"0", "false", "no", "n", "off", "нет"}:
         return False
 
     return default
@@ -121,7 +95,7 @@ DEBUG: Final[bool] = _get_bool(
 
 
 # ============================================================
-# TELEGRAM BOT
+# TELEGRAM
 # ============================================================
 
 BOT_TOKEN: Final[str] = _get_str(
@@ -161,6 +135,9 @@ def _parse_admin_ids() -> list[int]:
 
 
 ADMIN_IDS: Final[list[int]] = _parse_admin_ids()
+
+# Compatibility with admin.py
+OWNER_IDS: Final[list[int]] = list(ADMIN_IDS)
 
 
 # ============================================================
@@ -234,7 +211,7 @@ TWELVE_DATA_CACHE_SECONDS: Final[int] = max(
 
 
 # ============================================================
-# CANDLE / MARKET DATA
+# CANDLES
 # ============================================================
 
 MIN_CANDLES_REQUIRED: Final[int] = max(
@@ -255,7 +232,7 @@ MAX_CANDLES: Final[int] = max(
 
 
 # ============================================================
-# SIGNAL SETTINGS
+# SIGNAL THRESHOLDS
 # ============================================================
 
 MIN_SIGNAL_WINRATE: Final[float] = max(
@@ -277,6 +254,7 @@ MIN_SIGNAL_CONFIDENCE: Final[float] = max(
             "MIN_SIGNAL_CONFIDENCE",
             75.0,
         ),
+    ),
 )
 
 MIN_SIGNAL_QUALITY: Final[float] = max(
@@ -433,7 +411,7 @@ STOCHASTIC_SMOOTHING: Final[int] = max(
 
 
 # ============================================================
-# COMPATIBILITY ALIASES FOR INDICATORS
+# INDICATOR COMPATIBILITY ALIASES
 # ============================================================
 
 EMA_FAST: Final[int] = EMA_FAST_PERIOD
@@ -503,7 +481,7 @@ SIGNAL_DEDUPLICATION_MINUTES: Final[int] = max(
 
 
 # ============================================================
-# SIGNAL EXPIRY
+# EXPIRY
 # ============================================================
 
 MIN_EXPIRY_MINUTES: Final[int] = max(
@@ -527,7 +505,7 @@ MAX_EXPIRY_MINUTES: Final[int] = max(
 
 
 # ============================================================
-# RESULT CHECKING
+# RESULT CHECKER
 # ============================================================
 
 RESULT_CHECK_INTERVAL_SECONDS: Final[int] = max(
@@ -538,7 +516,8 @@ RESULT_CHECK_INTERVAL_SECONDS: Final[int] = max(
     ),
 )
 
-# Compatibility name used by SignalResultChecker.
+# IMPORTANT:
+# SignalResultChecker imports this exact name.
 RESULT_CHECKER_INTERVAL_SECONDS: Final[int] = (
     RESULT_CHECK_INTERVAL_SECONDS
 )
@@ -553,7 +532,7 @@ RESULT_PRICE_TOLERANCE_SECONDS: Final[int] = max(
 
 
 # ============================================================
-# SIGNAL RESULT VALUES
+# SIGNAL RESULT CONSTANTS
 # ============================================================
 
 RESULT_PENDING: Final[str] = "PENDING"
@@ -572,7 +551,7 @@ SIGNAL_RESULT_CANCELLED: Final[str] = RESULT_CANCELLED
 
 
 # ============================================================
-# MARKETS
+# MARKET
 # ============================================================
 
 DEFAULT_MARKET: Final[str] = _get_str(
@@ -603,10 +582,6 @@ PAIRS: Final[list[str]] = _get_list(
     DEFAULT_PAIRS,
 )
 
-
-# ============================================================
-# PAIR LIMITS
-# ============================================================
 
 MAX_PAIRS_PER_SCAN: Final[int] = max(
     1,
@@ -642,7 +617,7 @@ PROBABILITY_MINIMUM_WINRATE: Final[float] = max(
 
 
 # ============================================================
-# DATABASE / SIGNAL STORAGE
+# SIGNAL STORAGE
 # ============================================================
 
 SIGNAL_HISTORY_LIMIT: Final[int] = max(
@@ -655,7 +630,7 @@ SIGNAL_HISTORY_LIMIT: Final[int] = max(
 
 
 # ============================================================
-# HTTP / SERVER
+# SERVER
 # ============================================================
 
 HOST: Final[str] = _get_str(
@@ -685,7 +660,7 @@ MOSCOW_TIMEZONE: Final[str] = "Europe/Moscow"
 
 
 # ============================================================
-# ACCESS / APPROVAL COMPATIBILITY
+# ACCESS
 # ============================================================
 
 ACCESS_APPROVED: Final[str] = "APPROVED"
@@ -704,7 +679,7 @@ LOG_LEVEL: Final[str] = _get_str(
 
 
 # ============================================================
-# FEATURE FLAGS
+# FEATURES
 # ============================================================
 
 ENABLE_RESULT_CHECKER: Final[bool] = _get_bool(
@@ -741,19 +716,16 @@ STARTUP_TIMEOUT_SECONDS: Final[int] = max(
 # ============================================================
 
 __all__ = [
-    # Application
     "APP_NAME",
     "APP_ENV",
     "DEBUG",
 
-    # Telegram
     "BOT_TOKEN",
     "ADMIN_IDS",
+    "OWNER_IDS",
 
-    # Database
     "DATABASE_URL",
 
-    # Twelve Data
     "TWELVE_DATA_API_KEY",
     "TWELVE_DATA_BASE_URL",
     "TWELVE_DATA_TIMEOUT_SECONDS",
@@ -763,17 +735,14 @@ __all__ = [
     "TWELVE_DATA_MAX_REQUESTS_PER_SCAN",
     "TWELVE_DATA_CACHE_SECONDS",
 
-    # Candles
     "MIN_CANDLES_REQUIRED",
     "MAX_CANDLES",
 
-    # Signal thresholds
     "MIN_SIGNAL_WINRATE",
     "MIN_SIGNAL_CONFIDENCE",
     "MIN_SIGNAL_QUALITY",
     "MIN_SIGNAL_CONFIRMATIONS",
 
-    # Scores
     "EMA_SCORE",
     "TREND_SCORE",
     "RSI_SCORE",
@@ -782,7 +751,6 @@ __all__ = [
     "STOCHASTIC_SCORE",
     "PRICE_ACTION_SCORE",
 
-    # Indicator periods
     "EMA_FAST_PERIOD",
     "EMA_SLOW_PERIOD",
     "EMA_TREND_PERIOD",
@@ -795,7 +763,6 @@ __all__ = [
     "STOCHASTIC_PERIOD",
     "STOCHASTIC_SMOOTHING",
 
-    # Indicator aliases
     "EMA_FAST",
     "EMA_SLOW",
     "EMA_TREND",
@@ -808,7 +775,6 @@ __all__ = [
     "STOCHASTIC_K_PERIOD",
     "STOCHASTIC_D_PERIOD",
 
-    # Automatic signals
     "AUTO_SIGNAL_ENABLED",
     "AUTO_SIGNAL_INTERVAL_MINUTES",
     "AUTO_SIGNAL_MINUTES",
@@ -816,11 +782,9 @@ __all__ = [
     "SIGNAL_COOLDOWN_MINUTES",
     "SIGNAL_DEDUPLICATION_MINUTES",
 
-    # Expiry
     "MIN_EXPIRY_MINUTES",
     "MAX_EXPIRY_MINUTES",
 
-    # Results
     "RESULT_CHECK_INTERVAL_SECONDS",
     "RESULT_CHECKER_INTERVAL_SECONDS",
     "RESULT_PRICE_TOLERANCE_SECONDS",
@@ -837,42 +801,32 @@ __all__ = [
     "SIGNAL_RESULT_DRAW",
     "SIGNAL_RESULT_CANCELLED",
 
-    # Markets
     "DEFAULT_MARKET",
 
-    # Pairs
     "DEFAULT_PAIRS",
     "PAIRS",
     "MAX_PAIRS_PER_SCAN",
 
-    # Probability
     "PROBABILITY_MINIMUM_TRADES",
     "PROBABILITY_MINIMUM_WINRATE",
 
-    # Storage
     "SIGNAL_HISTORY_LIMIT",
 
-    # Server
     "HOST",
     "PORT",
 
-    # Time
     "TIMEZONE",
     "MOSCOW_TIMEZONE",
 
-    # Access
     "ACCESS_APPROVED",
     "ACCESS_PENDING",
     "ACCESS_BLOCKED",
 
-    # Logging
     "LOG_LEVEL",
 
-    # Features
     "ENABLE_RESULT_CHECKER",
     "ENABLE_AUTO_SIGNALS",
     "ENABLE_MARKET_CACHE",
 
-    # Startup
     "STARTUP_TIMEOUT_SECONDS",
 ]
