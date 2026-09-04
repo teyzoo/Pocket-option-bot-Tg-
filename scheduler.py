@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class SignalScheduler:
+
     def __init__(
         self,
         bot: Bot,
@@ -51,7 +52,11 @@ class SignalScheduler:
         self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
+
         if self._running:
+            logger.warning(
+                "Signal scheduler is already running"
+            )
             return
 
         self._running = True
@@ -66,15 +71,19 @@ class SignalScheduler:
         )
 
     async def stop(self) -> None:
+
         self._running = False
 
         if self._task is not None:
+
             self._task.cancel()
 
             try:
                 await self._task
+
             except asyncio.CancelledError:
                 pass
+
             except Exception:
                 logger.exception(
                     "Signal scheduler stopped with error"
@@ -87,6 +96,7 @@ class SignalScheduler:
         )
 
     async def run(self) -> None:
+
         await self.start()
 
         if self._task is None:
@@ -94,11 +104,18 @@ class SignalScheduler:
 
         try:
             await self._task
+
         except asyncio.CancelledError:
             pass
 
     async def _run_loop(self) -> None:
+
+        logger.info(
+            "Automatic signal loop is active"
+        )
+
         while self._running:
+
             try:
                 interval = await self._get_interval()
 
@@ -110,14 +127,14 @@ class SignalScheduler:
                     target
                 )
 
-                if wait_seconds > 0:
-                    logger.info(
-                        "Next automatic signal scan: %s "
-                        "(%.1f sec)",
-                        target,
-                        wait_seconds,
-                    )
+                logger.info(
+                    "Next automatic signal scan: %s "
+                    "(%.1f sec)",
+                    target,
+                    wait_seconds,
+                )
 
+                if wait_seconds > 0:
                     await asyncio.sleep(
                         wait_seconds
                     )
@@ -125,7 +142,13 @@ class SignalScheduler:
                 if not self._running:
                     break
 
-                await self.run_once()
+                sent = await self.run_once()
+
+                logger.info(
+                    "Automatic scan completed: "
+                    "sent=%s",
+                    sent,
+                )
 
             except asyncio.CancelledError:
                 raise
@@ -138,6 +161,7 @@ class SignalScheduler:
                 await asyncio.sleep(10)
 
     async def _get_interval(self) -> int:
+
         value = await get_int_setting(
             "auto_signals.interval_minutes",
             AUTO_SIGNAL_INTERVAL_MINUTES,
@@ -159,17 +183,22 @@ class SignalScheduler:
         )
 
         if not enabled:
-            logger.info(
-                "Automatic signals disabled"
+
+            logger.warning(
+                "Automatic signals disabled "
+                "by owner setting"
             )
+
             return 0
 
         users = await get_approved_auto_users()
 
         if not users:
-            logger.info(
+
+            logger.warning(
                 "No users enabled for automatic signals"
             )
+
             return 0
 
         max_pairs = await get_int_setting(
@@ -185,7 +214,15 @@ class SignalScheduler:
             ),
         )
 
+        logger.info(
+            "Automatic scan started: "
+            "users=%d pairs=%d",
+            len(users),
+            max_pairs,
+        )
+
         try:
+
             candidate = await self.scanner.scan(
                 market="regular",
                 expiry_minutes="any",
@@ -194,20 +231,44 @@ class SignalScheduler:
             )
 
         except Exception:
+
             logger.exception(
                 "Automatic market scan failed"
             )
+
             return 0
 
         if candidate is None:
+
             logger.info(
                 "No qualifying automatic signal found"
             )
+
             return 0
 
-        signal = await save_signal(
-            candidate
+        logger.info(
+            "Automatic candidate found: "
+            "%s %s %.2f%%",
+            candidate.pair,
+            candidate.direction,
+            float(
+                candidate.winrate or 0
+            ),
         )
+
+        try:
+
+            signal = await save_signal(
+                candidate
+            )
+
+        except Exception:
+
+            logger.exception(
+                "Failed to save automatic signal"
+            )
+
+            return 0
 
         chart_path = getattr(
             candidate,
@@ -220,12 +281,22 @@ class SignalScheduler:
             for user in users
         ]
 
-        sent = await broadcast_signal(
-            bot=self.bot,
-            signal=signal,
-            telegram_ids=telegram_ids,
-            chart_path=chart_path,
-        )
+        try:
+
+            sent = await broadcast_signal(
+                bot=self.bot,
+                signal=signal,
+                telegram_ids=telegram_ids,
+                chart_path=chart_path,
+            )
+
+        except Exception:
+
+            logger.exception(
+                "Failed to broadcast automatic signal"
+            )
+
+            return 0
 
         logger.info(
             "Automatic signal %s sent to %d users: "
