@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -60,9 +59,7 @@ class CandleFilter:
         if not isinstance(raw, dict):
             return CandleFilterSettings()
 
-        enabled = bool(
-            raw.get("enabled", False)
-        )
+        enabled = bool(raw.get("enabled", False))
 
         try:
             count = int(
@@ -80,13 +77,8 @@ class CandleFilter:
 
         if expires_raw:
             try:
-                if isinstance(
-                    expires_raw,
-                    datetime,
-                ):
-                    expires_at = ensure_utc(
-                        expires_raw
-                    )
+                if isinstance(expires_raw, datetime):
+                    expires_at = ensure_utc(expires_raw)
                 else:
                     expires_at = ensure_utc(
                         datetime.fromisoformat(
@@ -98,10 +90,7 @@ class CandleFilter:
 
         settings = CandleFilterSettings(
             enabled=enabled,
-            ignored_last_candles=max(
-                0,
-                count,
-            ),
+            ignored_last_candles=max(0, count),
             expires_at=expires_at,
         )
 
@@ -110,9 +99,7 @@ class CandleFilter:
             and settings.expires_at is not None
             and settings.expires_at <= utc_now()
         ):
-            await self.disable(
-                updated_by=None
-            )
+            await self.disable(updated_by=None)
             return CandleFilterSettings()
 
         return settings
@@ -140,9 +127,7 @@ class CandleFilter:
 
         expires_at = (
             utc_now()
-            + timedelta(
-                minutes=duration
-            )
+            + timedelta(minutes=duration)
         )
 
         value = {
@@ -216,3 +201,34 @@ class CandleFilter:
             f"{settings.ignored_last_candles} • "
             f"до: {expires}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Обратная совместимость
+# ---------------------------------------------------------------------------
+#
+# signal_scanner.py импортирует:
+#
+#     from candle_filter import candle_filter
+#
+# Поэтому оставляем совместимую функцию.
+#
+# Функция использует тот же CandleFilter и не меняет существующую логику.
+#
+
+_candle_filter_instance = CandleFilter()
+
+
+async def candle_filter(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Применяет текущий временный фильтр свечей.
+
+    Совместимый функциональный интерфейс для старого кода.
+    """
+    return await _candle_filter_instance.apply(df)
+
+
+# Удобный доступ к экземпляру фильтра для нового кода.
+candle_filter_service = _candle_filter_instance
