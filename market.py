@@ -24,7 +24,7 @@ class MarketAPIError(Exception):
 
 class MarketClient:
     """
-    Клиент Twelve Data.
+    Быстрый клиент Twelve Data.
 
     Поддерживает:
 
@@ -33,7 +33,14 @@ class MarketClient:
     - force_refresh;
     - получение цены закрытия на момент expiry;
     - закрытие HTTP-клиента;
-    - небольшой TTL-кэш.
+    - TTL-кэш;
+    - параллельные запросы разных пар.
+
+    В отличие от старой версии здесь НЕТ глобального
+    asyncio.Lock на каждый HTTP-запрос.
+
+    Поэтому при сканировании нескольких пар запросы
+    могут выполняться одновременно.
     """
 
     def __init__(self) -> None:
@@ -45,31 +52,64 @@ class MarketClient:
             TWELVE_DATA_TIMEOUT
         )
 
-        self._lock = asyncio.Lock()
-
+        # HTTP-клиент создаётся лениво.
         self._client: httpx.AsyncClient | None = None
 
+        # Небольшой lock используется только для безопасного
+        # создания/замены HTTP-клиента.
+        #
+        # Он НЕ удерживается во время HTTP-запроса.
+        self._client_lock = asyncio.Lock()
+
+        # Кэш:
+        #
+        # (symbol, interval, outputsize)
+        #
+        # -> (monotonic timestamp, dataframe)
         self._cache: dict[
             tuple[str, str, int],
             tuple[float, pd.DataFrame],
         ] = {}
 
+        # Защита кэша от одновременной записи.
+        self._cache_lock = asyncio.Lock()
+
     # ========================================================
     # HTTP CLIENT
     # ========================================================
 
-    def _get_http_client(
+    async def _get_http_client(
         self,
     ) -> httpx.AsyncClient:
-        if (
-            self._client is None
-            or self._client.is_closed
-        ):
-            self._client = httpx.AsyncClient(
-                timeout=self.timeout
-            )
+        """
+        Возвращает общий AsyncClient.
 
-        return self._client
+        Lock удерживается только на момент проверки/
+        создания клиента.
+
+        Сам HTTP-запрос выполняется БЕЗ lock.
+        """
+
+        if (
+            self._client is not None
+            and not self._client.is_closed
+        ):
+            return self._client
+
+        async with self._client_lock:
+            if (
+                self._client is None
+                or self._client.is_closed
+            ):
+                self._client = httpx.AsyncClient(
+                    timeout=self.timeout,
+                    limits=httpx.Limits(
+                        max_connections=30,
+                        max_keepalive_connections=20,
+                    ),
+                )
+
+            return self._client
 
     # ========================================================
     # REQUEST
@@ -79,32 +119,38 @@ class MarketClient:
         self,
         params: dict[str, Any],
     ) -> dict[str, Any]:
+        """
+        Выполняет запрос к Twelve Data.
+
+        Запросы разных пар НЕ блокируют друг друга.
+        """
+
         request_params = dict(
             params
         )
 
-        request_params[
-            "apikey"
-        ] = TWELVE_DATA_API_KEY
+        request_params["apikey"] = (
+            TWELVE_DATA_API_KEY
+        )
 
-        async with self._lock:
-            client = self._get_http_client()
+        client = await self._get_http_client()
 
-            try:
-                response = await client.get(
-                    f"{self.base_url}/time_series",
-                    params=request_params,
-                )
+        try:
+            response = await client.get(
+                f"{self.base_url}/time_series",
+                params=request_params,
+            )
 
-                response.raise_for_status()
+            response.raise_for_status()
 
-            except httpx.HTTPError as exc:
-                raise MarketAPIError(
-                    f"Twelve Data HTTP error: {exc}"
-                ) from exc
+        except httpx.HTTPError as exc:
+            raise MarketAPIError(
+                f"Twelve Data HTTP error: {exc}"
+            ) from exc
 
         try:
             data = response.json()
+
         except ValueError as exc:
             raise MarketAPIError(
                 "Twelve Data returned invalid JSON"
@@ -142,14 +188,15 @@ class MarketClient:
 
         force_refresh=True полностью игнорирует кэш.
 
-        **kwargs оставлен для совместимости со старыми
-        вызовами модулей проекта.
+        **kwargs сохранён для совместимости со старыми
+        вызовами проекта.
         """
 
         try:
             outputsize = int(
                 outputsize
             )
+
         except (
             TypeError,
             ValueError,
@@ -256,7 +303,7 @@ class MarketClient:
                 TypeError,
                 ValueError,
             ):
-                # Пропускаем битую свечу.
+                # Битую свечу пропускаем.
                 continue
 
         df = pd.DataFrame(
@@ -280,7 +327,9 @@ class MarketClient:
                 subset=["datetime"],
                 keep="last",
             )
-            .reset_index(drop=True)
+            .reset_index(
+                drop=True
+            )
         )
 
         # ----------------------------------------------------
@@ -288,14 +337,78 @@ class MarketClient:
         # ----------------------------------------------------
 
         if TWELVE_DATA_CACHE_SECONDS > 0:
-            self._cache[
-                cache_key
-            ] = (
-                now,
-                df.copy(),
-            )
+            async with self._cache_lock:
+                self._cache[
+                    cache_key
+                ] = (
+                    time.monotonic(),
+                    df.copy(),
+                )
 
         return df
+
+    # ========================================================
+    # FAST PARALLEL CANDLES
+    # ========================================================
+
+    async def get_candles_many(
+        self,
+        symbols: list[str],
+        interval: str = "1min",
+        outputsize: int = MAX_CANDLES,
+        force_refresh: bool = False,
+    ) -> dict[str, pd.DataFrame]:
+        """
+        Получает свечи сразу для нескольких пар.
+
+        Все запросы выполняются параллельно.
+
+        Ошибка одной пары НЕ ломает остальные.
+        """
+
+        unique_symbols = list(
+            dict.fromkeys(
+                str(symbol)
+                for symbol in symbols
+                if symbol
+            )
+        )
+
+        if not unique_symbols:
+            return {}
+
+        async def fetch(
+            symbol: str,
+        ) -> tuple[
+            str,
+            pd.DataFrame | None,
+        ]:
+            try:
+                df = await self.get_candles(
+                    symbol=symbol,
+                    interval=interval,
+                    outputsize=outputsize,
+                    force_refresh=force_refresh,
+                )
+
+                return symbol, df
+
+            except Exception:
+                return symbol, None
+
+        results = await asyncio.gather(
+            *(
+                fetch(symbol)
+                for symbol in unique_symbols
+            ),
+            return_exceptions=False,
+        )
+
+        return {
+            symbol: df
+            for symbol, df in results
+            if df is not None
+        }
 
     # ========================================================
     # PRICE
@@ -305,6 +418,13 @@ class MarketClient:
         self,
         symbol: str,
     ) -> float:
+        """
+        Получает последнюю доступную цену.
+
+        Используется отдельный короткий запрос свечи,
+        как и в предыдущей реализации.
+        """
+
         df = await self.get_candles(
             symbol=symbol,
             interval="1min",
@@ -315,6 +435,63 @@ class MarketClient:
         return float(
             df.iloc[-1]["close"]
         )
+
+    # ========================================================
+    # PARALLEL PRICES
+    # ========================================================
+
+    async def get_prices_many(
+        self,
+        symbols: list[str],
+    ) -> dict[str, float]:
+        """
+        Получает цены нескольких пар параллельно.
+        """
+
+        unique_symbols = list(
+            dict.fromkeys(
+                str(symbol)
+                for symbol in symbols
+                if symbol
+            )
+        )
+
+        if not unique_symbols:
+            return {}
+
+        async def fetch(
+            symbol: str,
+        ) -> tuple[
+            str,
+            float | None,
+        ]:
+            try:
+                return (
+                    symbol,
+                    await self.get_price(
+                        symbol
+                    ),
+                )
+
+            except Exception:
+                return (
+                    symbol,
+                    None,
+                )
+
+        results = await asyncio.gather(
+            *(
+                fetch(symbol)
+                for symbol in unique_symbols
+            ),
+            return_exceptions=False,
+        )
+
+        return {
+            symbol: price
+            for symbol, price in results
+            if price is not None
+        }
 
     # ========================================================
     # EXPIRY CLOSE
@@ -332,8 +509,8 @@ class MarketClient:
         Логика:
 
         1. приводим datetime к UTC;
-        2. ищем свечу с timestamp <= expiry;
-        3. если её нет — берём ближайшую после expiry;
+        2. ищем свечу timestamp <= expiry;
+        3. если её нет — ближайшую после expiry;
         4. возвращаем close.
         """
 
@@ -354,6 +531,7 @@ class MarketClient:
                 expiry,
                 utc=True,
             )
+
         except (
             TypeError,
             ValueError,
@@ -367,6 +545,7 @@ class MarketClient:
                 df["datetime"],
                 utc=True,
             )
+
         except Exception:
             return None
 
@@ -380,7 +559,9 @@ class MarketClient:
             .sort_values(
                 "datetime"
             )
-            .reset_index(drop=True)
+            .reset_index(
+                drop=True
+            )
         )
 
         if df.empty:
@@ -401,6 +582,7 @@ class MarketClient:
                 return float(
                     row["close"]
                 )
+
             except (
                 TypeError,
                 ValueError,
@@ -421,6 +603,7 @@ class MarketClient:
                 return float(
                     after.iloc[0]["close"]
                 )
+
             except (
                 TypeError,
                 ValueError,
@@ -445,11 +628,12 @@ class MarketClient:
         Закрывает HTTP-клиент.
         """
 
-        if self._client is not None:
-            if not self._client.is_closed:
-                await self._client.aclose()
+        async with self._client_lock:
+            if self._client is not None:
+                if not self._client.is_closed:
+                    await self._client.aclose()
 
-            self._client = None
+                self._client = None
 
         self._cache.clear()
 
