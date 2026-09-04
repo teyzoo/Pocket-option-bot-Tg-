@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple, List
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-from config import (
-    MIN_SIGNAL_CONFIRMATIONS,
-)
+from config import MIN_SIGNAL_CONFIRMATIONS
 from indicators import calculate_indicators
 
 
@@ -25,6 +23,7 @@ class BacktestResult:
 
     @property
     def winrate(self) -> float:
+
         decisive = self.decisive_trades
 
         if decisive <= 0:
@@ -45,13 +44,18 @@ def _safe_float(
     value,
     default: float = 0.0,
 ) -> float:
+
     try:
+
         if pd.isna(value):
             return default
 
         return float(value)
 
-    except (TypeError, ValueError):
+    except (
+        TypeError,
+        ValueError,
+    ):
         return default
 
 
@@ -63,15 +67,6 @@ def _evaluate_row(
     float,
     List[str],
 ]:
-    """
-    Оценка одной свечи.
-
-    Возвращает:
-        direction,
-        confirmations,
-        confidence,
-        reasons
-    """
 
     up_score = 0.0
     down_score = 0.0
@@ -84,16 +79,19 @@ def _evaluate_row(
     ema_fast = _safe_float(
         row.get("ema_fast")
     )
+
     ema_slow = _safe_float(
         row.get("ema_slow")
     )
 
     if ema_fast > ema_slow:
+
         up_score += 15
         confirmations += 1
         reasons_up.append("EMA")
 
     elif ema_fast < ema_slow:
+
         down_score += 15
         confirmations += 1
         reasons_down.append("EMA")
@@ -103,15 +101,20 @@ def _evaluate_row(
     )
 
     price = _safe_float(
-        row.get("close", row.get("price"))
+        row.get(
+            "close",
+            row.get("price")
+        )
     )
 
     if price > ema_trend:
+
         up_score += 15
         confirmations += 1
         reasons_up.append("TREND")
 
     elif price < ema_trend:
+
         down_score += 15
         confirmations += 1
         reasons_down.append("TREND")
@@ -122,11 +125,13 @@ def _evaluate_row(
     )
 
     if rsi >= 55:
+
         up_score += 10
         confirmations += 1
         reasons_up.append("RSI")
 
     elif rsi <= 45:
+
         down_score += 10
         confirmations += 1
         reasons_down.append("RSI")
@@ -140,27 +145,23 @@ def _evaluate_row(
     )
 
     if macd > macd_signal:
+
         up_score += 15
         confirmations += 1
         reasons_up.append("MACD")
 
     elif macd < macd_signal:
+
         down_score += 15
         confirmations += 1
         reasons_down.append("MACD")
 
-    bb_upper = _safe_float(
-        row.get("bollinger_upper")
-    )
-
-    bb_lower = _safe_float(
-        row.get("bollinger_lower")
-    )
-
     bb_middle = _safe_float(
         row.get(
             "bollinger_middle",
-            row.get("bb_middle"),
+            row.get(
+                "bb_middle"
+            )
         )
     )
 
@@ -168,6 +169,7 @@ def _evaluate_row(
         bb_middle != 0.0
         and price > bb_middle
     ):
+
         up_score += 10
         confirmations += 1
         reasons_up.append("BB")
@@ -176,49 +178,73 @@ def _evaluate_row(
         bb_middle != 0.0
         and price < bb_middle
     ):
+
         down_score += 10
         confirmations += 1
         reasons_down.append("BB")
 
     stochastic_k = _safe_float(
-        row.get("stochastic_k"),
+        row.get(
+            "stochastic_k"
+        ),
         50.0,
     )
 
     stochastic_d = _safe_float(
-        row.get("stochastic_d"),
+        row.get(
+            "stochastic_d"
+        ),
         50.0,
     )
 
     if stochastic_k > stochastic_d:
+
         up_score += 10
         confirmations += 1
-        reasons_up.append("STOCHASTIC")
+        reasons_up.append(
+            "STOCHASTIC"
+        )
 
     elif stochastic_k < stochastic_d:
+
         down_score += 10
         confirmations += 1
-        reasons_down.append("STOCHASTIC")
+        reasons_down.append(
+            "STOCHASTIC"
+        )
 
     bullish = bool(
-        row.get("bullish", False)
+        row.get(
+            "bullish",
+            False,
+        )
     )
 
     bearish = bool(
-        row.get("bearish", False)
+        row.get(
+            "bearish",
+            False,
+        )
     )
 
     if bullish:
+
         up_score += 15
         confirmations += 1
-        reasons_up.append("PRICE_ACTION")
+        reasons_up.append(
+            "PRICE_ACTION"
+        )
 
     elif bearish:
+
         down_score += 15
         confirmations += 1
-        reasons_down.append("PRICE_ACTION")
+        reasons_down.append(
+            "PRICE_ACTION"
+        )
 
     if up_score == down_score:
+
         return (
             None,
             confirmations,
@@ -227,11 +253,13 @@ def _evaluate_row(
         )
 
     if up_score > down_score:
+
         direction = "UP"
         score = up_score
         reasons = reasons_up
 
     else:
+
         direction = "DOWN"
         score = down_score
         reasons = reasons_down
@@ -241,7 +269,11 @@ def _evaluate_row(
         50.0 + score * 0.5,
     )
 
-    if confirmations < MIN_SIGNAL_CONFIRMATIONS:
+    if (
+        confirmations
+        < MIN_SIGNAL_CONFIRMATIONS
+    ):
+
         return (
             None,
             confirmations,
@@ -265,9 +297,6 @@ def evaluate_row(
     float,
     List[str],
 ]:
-    """
-    Публичная совместимая обёртка.
-    """
 
     return _evaluate_row(row)
 
@@ -278,6 +307,7 @@ def _series_bool(
 ) -> pd.Series:
 
     if column not in dataframe.columns:
+
         return pd.Series(
             False,
             index=dataframe.index,
@@ -298,28 +328,25 @@ def _series_float(
 ) -> pd.Series:
 
     if column not in dataframe.columns:
+
         return pd.Series(
             default,
             index=dataframe.index,
             dtype=float,
         )
 
-    return pd.to_numeric(
-        dataframe[column],
-        errors="coerce",
-    ).fillna(default)
+    return (
+        pd.to_numeric(
+            dataframe[column],
+            errors="coerce",
+        )
+        .fillna(default)
+    )
 
 
 def _vectorized_predictions(
     dataframe: pd.DataFrame,
 ):
-    """
-    Быстро рассчитывает направление/подтверждения
-    для всех исторических свечей.
-
-    Это намного быстрее, чем запускать _evaluate_row
-    тысячи раз через Python-цикл.
-    """
 
     ema_fast = _series_float(
         dataframe,
@@ -357,17 +384,18 @@ def _vectorized_predictions(
         "macd_signal",
     )
 
-    bb_middle = _series_float(
-        dataframe,
-        "bollinger_middle",
-    )
-
     if (
         "bollinger_middle"
-        not in dataframe.columns
-        and "bb_middle"
         in dataframe.columns
     ):
+
+        bb_middle = _series_float(
+            dataframe,
+            "bollinger_middle",
+        )
+
+    else:
+
         bb_middle = _series_float(
             dataframe,
             "bb_middle",
@@ -395,23 +423,55 @@ def _vectorized_predictions(
         "bearish",
     )
 
-    up_ema = ema_fast > ema_slow
-    down_ema = ema_fast < ema_slow
+    up_ema = (
+        ema_fast > ema_slow
+    )
 
-    up_trend = close > ema_trend
-    down_trend = close < ema_trend
+    down_ema = (
+        ema_fast < ema_slow
+    )
 
-    up_rsi = rsi >= 55
-    down_rsi = rsi <= 45
+    up_trend = (
+        close > ema_trend
+    )
 
-    up_macd = macd > macd_signal
-    down_macd = macd < macd_signal
+    down_trend = (
+        close < ema_trend
+    )
 
-    up_bb = close > bb_middle
-    down_bb = close < bb_middle
+    up_rsi = (
+        rsi >= 55
+    )
 
-    up_stoch = stochastic_k > stochastic_d
-    down_stoch = stochastic_k < stochastic_d
+    down_rsi = (
+        rsi <= 45
+    )
+
+    up_macd = (
+        macd > macd_signal
+    )
+
+    down_macd = (
+        macd < macd_signal
+    )
+
+    up_bb = (
+        close > bb_middle
+    )
+
+    down_bb = (
+        close < bb_middle
+    )
+
+    up_stoch = (
+        stochastic_k
+        > stochastic_d
+    )
+
+    down_stoch = (
+        stochastic_k
+        < stochastic_d
+    )
 
     up_action = bullish
     down_action = bearish
@@ -456,8 +516,6 @@ def _vectorized_predictions(
         + down_action.astype(int)
     )
 
-    # В исходной логике confirmations — это общее
-    # количество активных подтверждений.
     confirmations = (
         up_confirmations
         + down_confirmations
@@ -498,7 +556,9 @@ def _vectorized_predictions(
             confirmations
             >= MIN_SIGNAL_CONFIRMATIONS
         )
-        & (confidence >= 75.0)
+        & (
+            confidence >= 75.0
+        )
     )
 
     return (
@@ -514,19 +574,15 @@ def run_backtest(
     expiry_minutes: int,
     direction: Optional[str] = None,
 ) -> BacktestResult:
-    """
-    Backtest для конкретной экспирации.
-
-    Важное ускорение:
-    если индикаторы уже рассчитаны, они НЕ рассчитываются
-    повторно.
-
-    Результаты считаются векторно через pandas/numpy.
-    """
 
     try:
-        expiry = int(expiry_minutes)
-    except (TypeError, ValueError):
+        expiry = int(
+            expiry_minutes
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
         return BacktestResult()
 
     if expiry < 1:
@@ -557,13 +613,39 @@ def run_backtest(
     if not required_columns.issubset(
         set(data.columns)
     ):
-        data = calculate_indicators(data)
 
-    data = (
-        data
-        .sort_values("datetime")
-        .reset_index(drop=True)
-    )
+        data = calculate_indicators(
+            data
+        )
+
+    if "datetime" in data.columns:
+
+        data["datetime"] = (
+            pd.to_datetime(
+                data["datetime"],
+                utc=True,
+                errors="coerce",
+            )
+        )
+
+        data = (
+            data
+            .sort_values(
+                "datetime"
+            )
+            .reset_index(
+                drop=True
+            )
+        )
+
+    else:
+
+        data = (
+            data
+            .reset_index(
+                drop=True
+            )
+        )
 
     if len(data) < 60 + expiry:
         return BacktestResult()
@@ -573,7 +655,9 @@ def run_backtest(
         confirmations,
         confidence,
         eligible,
-    ) = _vectorized_predictions(data)
+    ) = _vectorized_predictions(
+        data
+    )
 
     start_index = 60
 
@@ -596,6 +680,7 @@ def run_backtest(
     mask &= eligible
 
     if direction:
+
         normalized_direction = (
             str(direction)
             .strip()
@@ -606,6 +691,7 @@ def run_backtest(
             "UP",
             "DOWN",
         }:
+
             return BacktestResult()
 
         mask &= (
@@ -631,11 +717,17 @@ def run_backtest(
     if not bool(valid.any()):
         return BacktestResult()
 
-    predicted = predictions.loc[valid]
+    predicted = predictions.loc[
+        valid
+    ]
 
-    current = current_close.loc[valid]
+    current = current_close.loc[
+        valid
+    ]
 
-    future = future_close.loc[valid]
+    future = future_close.loc[
+        valid
+    ]
 
     up_predictions = (
         predicted == "UP"
@@ -670,11 +762,17 @@ def run_backtest(
     )
 
     wins = int(
-        (up_wins | down_wins).sum()
+        (
+            up_wins
+            | down_wins
+        ).sum()
     )
 
     losses = int(
-        (up_losses | down_losses).sum()
+        (
+            up_losses
+            | down_losses
+        ).sum()
     )
 
     draw_count = int(
