@@ -26,9 +26,7 @@ async def get_user(
     async with get_session() as session:
         result = await session.execute(
             select(User).where(
-                User.telegram_id == int(
-                    telegram_id
-                )
+                User.telegram_id == int(telegram_id)
             )
         )
 
@@ -38,9 +36,7 @@ async def get_user(
 async def get_user_access_status(
     telegram_id: int,
 ) -> str | None:
-    user = await get_user(
-        telegram_id
-    )
+    user = await get_user(telegram_id)
 
     if user is None:
         return None
@@ -53,9 +49,7 @@ async def request_access(
     username: str | None,
     first_name: str | None,
 ) -> JoinRequest:
-    telegram_id = int(
-        telegram_id
-    )
+    telegram_id = int(telegram_id)
 
     async with get_session() as session:
         result = await session.execute(
@@ -65,7 +59,6 @@ async def request_access(
         )
 
         user = result.scalar_one_or_none()
-
         now = utc_now()
 
         if user is None:
@@ -142,9 +135,7 @@ async def approve_user(
     telegram_id: int,
     processed_by: int,
 ) -> User | None:
-    telegram_id = int(
-        telegram_id
-    )
+    telegram_id = int(telegram_id)
 
     async with get_session() as session:
         result = await session.execute(
@@ -177,9 +168,7 @@ async def approve_user(
         for request in requests.scalars().all():
             request.status = ACCESS_APPROVED
             request.processed_at = now
-            request.processed_by = int(
-                processed_by
-            )
+            request.processed_by = int(processed_by)
 
         await session.commit()
         await session.refresh(user)
@@ -191,9 +180,7 @@ async def reject_user(
     telegram_id: int,
     processed_by: int,
 ) -> User | None:
-    telegram_id = int(
-        telegram_id
-    )
+    telegram_id = int(telegram_id)
 
     async with get_session() as session:
         result = await session.execute(
@@ -226,9 +213,7 @@ async def reject_user(
         for request in requests.scalars().all():
             request.status = ACCESS_REJECTED
             request.processed_at = now
-            request.processed_by = int(
-                processed_by
-            )
+            request.processed_by = int(processed_by)
 
         await session.commit()
         await session.refresh(user)
@@ -241,9 +226,7 @@ async def blacklist_user(
     reason: str,
     processed_by: int,
 ) -> User | None:
-    telegram_id = int(
-        telegram_id
-    )
+    telegram_id = int(telegram_id)
 
     reason = (
         reason.strip()
@@ -280,9 +263,7 @@ async def blacklist_user(
         for request in requests.scalars().all():
             request.status = ACCESS_BLACKLISTED
             request.processed_at = now
-            request.processed_by = int(
-                processed_by
-            )
+            request.processed_by = int(processed_by)
 
         await session.commit()
         await session.refresh(user)
@@ -294,9 +275,7 @@ async def unblacklist_user(
     telegram_id: int,
     processed_by: int,
 ) -> User | None:
-    telegram_id = int(
-        telegram_id
-    )
+    telegram_id = int(telegram_id)
 
     async with get_session() as session:
         result = await session.execute(
@@ -347,9 +326,7 @@ async def set_auto_signals(
     telegram_id: int,
     enabled: bool,
 ) -> bool:
-    telegram_id = int(
-        telegram_id
-    )
+    telegram_id = int(telegram_id)
 
     async with get_session() as session:
         result = await session.execute(
@@ -368,9 +345,7 @@ async def set_auto_signals(
             await session.commit()
             return False
 
-        user.is_auto_signals_enabled = bool(
-            enabled
-        )
+        user.is_auto_signals_enabled = bool(enabled)
         user.updated_at = utc_now()
 
         await session.commit()
