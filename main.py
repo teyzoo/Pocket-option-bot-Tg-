@@ -20,10 +20,6 @@ from signal_result_checker import SignalResultChecker
 from signal_scanner import SignalScanner
 
 
-# ============================================================
-# LOGGING
-# ============================================================
-
 logging.basicConfig(
     level=logging.INFO,
     format=(
@@ -37,13 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger("teyzoo")
 
 
-# ============================================================
-# TELEGRAM
-# ============================================================
-
-bot = Bot(
-    token=BOT_TOKEN,
-)
+bot = Bot(token=BOT_TOKEN)
 
 dp = Dispatcher()
 
@@ -52,10 +42,6 @@ dp.include_router(owner_router)
 dp.include_router(user_router)
 
 
-# ============================================================
-# SIGNAL ENGINE / SCANNER
-# ============================================================
-
 engine = SignalEngine()
 
 scanner = SignalScanner(
@@ -63,20 +49,10 @@ scanner = SignalScanner(
     engine=engine,
 )
 
-
-# ============================================================
-# SCHEDULER
-# ============================================================
-
 scheduler = SignalScheduler(
     bot=bot,
     scanner=scanner,
 )
-
-
-# ============================================================
-# RESULT CHECKER
-# ============================================================
 
 result_checker = SignalResultChecker(
     bot=bot,
@@ -84,72 +60,89 @@ result_checker = SignalResultChecker(
 )
 
 
-# ============================================================
-# TELEGRAM POLLING
-# ============================================================
+_polling_started = False
+
 
 async def polling_loop() -> None:
-    """
-    Надёжный Telegram polling.
+    global _polling_started
 
-    Если Telegram сообщает ConflictError, приложение не падает.
-    Повторяем подключение с задержкой.
+    if _polling_started:
+        logger.warning(
+            "Telegram polling already started; duplicate start prevented"
+        )
+        return
 
-    ВАЖНО:
-    если реально запущены два независимых процесса с одним BOT_TOKEN,
-    только один из них сможет получать updates.
-    """
+    _polling_started = True
 
-    logger.info(
-        "Telegram polling starting"
-    )
+    logger.info("Telegram polling starting")
 
-    retry_delay = 5
-
-    while True:
+    try:
+        # Убираем webhook, если он остался после предыдущего запуска.
         try:
-            await dp.start_polling(
-                bot,
-                allowed_updates=dp.resolve_used_update_types(),
+            await bot.delete_webhook(
+                drop_pending_updates=False
             )
-
-            logger.warning(
-                "Telegram polling stopped normally; "
-                "restarting in %s seconds",
-                retry_delay,
-            )
-
-            await asyncio.sleep(
-                retry_delay
-            )
-
-        except TelegramConflictError:
-            logger.error(
-                "Telegram polling conflict: "
-                "another process is using the same BOT_TOKEN. "
-                "Retrying in 15 seconds."
-            )
-
-            await asyncio.sleep(15)
-
-        except asyncio.CancelledError:
             logger.info(
-                "Telegram polling cancelled"
+                "Telegram webhook removed before polling"
             )
-            raise
-
         except Exception:
             logger.exception(
-                "Telegram polling stopped with error; "
-                "retrying in 10 seconds"
+                "Failed to remove Telegram webhook"
             )
 
-            await asyncio.sleep(10)
+        retry_delay = 15
 
+        while True:
+            try:
+                logger.info(
+                    "Starting Telegram getUpdates polling"
+                )
 
-# ============================================================
-# FASTAPI LIFESPAN
-# ============================================================
+                await dp.start_polling(
+                    bot,
+                    allowed_updates=dp.resolve_used_update_types(),
+                )
+
+                logger.warning(
+                    "Telegram polling stopped normally; "
+                    "retrying in %s seconds",
+                    retry_delay,
+                )
+
+                await asyncio.sleep(retry_delay)
+
+            except TelegramConflictError:
+                logger.error(
+                    "Telegram Conflict: another bot process "
+                    "is currently using getUpdates. "
+                    "Waiting %s seconds before retry.",
+                    retry_delay,
+                )
+
+                await asyncio.sleep(retry_delay)
+
+            except asyncio.CancelledError:
+                logger.info(
+                    "Telegram polling cancelled"
+                )
+                raise
+
+            except Exception:
+                logger.exception(
+                    "Telegram polling error; "
+                    "retrying in %s seconds",
+                    retry_delay,
+                )
+
+                await asyncio.sleep(retry_delay)
+
+    finally:
+        _polling_started = False
+
+        logger.info(
+            "Telegram polling stopped"
+        )
+
 
 @asynccontextmanager
 async def lifespan(
@@ -165,24 +158,12 @@ async def lifespan(
         "Database initialized"
     )
 
-    # --------------------------------------------------------
-    # Telegram polling
-    # --------------------------------------------------------
-
     polling_task = asyncio.create_task(
         polling_loop(),
         name="telegram-polling",
     )
 
-    # --------------------------------------------------------
-    # Scheduler
-    # --------------------------------------------------------
-
     await scheduler.start()
-
-    # --------------------------------------------------------
-    # Result checker
-    # --------------------------------------------------------
 
     await result_checker.start()
 
@@ -198,81 +179,50 @@ async def lifespan(
             "Stopping TEYZOO Signal Bot"
         )
 
-        # ----------------------------------------------------
-        # Scheduler
-        # ----------------------------------------------------
-
         try:
             await scheduler.stop()
-
         except Exception:
             logger.exception(
                 "Failed to stop signal scheduler"
             )
 
-        # ----------------------------------------------------
-        # Result checker
-        # ----------------------------------------------------
-
         try:
             await result_checker.stop()
-
         except Exception:
             logger.exception(
                 "Failed to stop result checker"
             )
 
-        # ----------------------------------------------------
-        # Telegram polling
-        # ----------------------------------------------------
-
         polling_task.cancel()
 
         try:
             await polling_task
-
         except asyncio.CancelledError:
             pass
-
         except Exception:
             logger.exception(
                 "Telegram polling shutdown error"
             )
 
-        # ----------------------------------------------------
-        # Telegram session
-        # ----------------------------------------------------
-
         try:
             await bot.session.close()
-
         except Exception:
             logger.exception(
                 "Failed to close Telegram bot session"
             )
 
-        # ----------------------------------------------------
-        # Database
-        # ----------------------------------------------------
-
-        try:
-            await close_db()
-
-        except Exception:
-            logger.exception(
-                "Failed to close database"
-            )
-
-        # ----------------------------------------------------
-        # Market client
-        # ----------------------------------------------------
-
         try:
             await market_client.close()
-
         except Exception:
             logger.exception(
                 "Failed to close market client"
+            )
+
+        try:
+            await close_db()
+        except Exception:
+            logger.exception(
+                "Failed to close database"
             )
 
         logger.info(
@@ -280,20 +230,12 @@ async def lifespan(
         )
 
 
-# ============================================================
-# FASTAPI
-# ============================================================
-
 app = FastAPI(
     title="TEYZOO Signal Bot",
-    version="2.1.0",
+    version="2.2.0",
     lifespan=lifespan,
 )
 
-
-# ============================================================
-# ROUTES
-# ============================================================
 
 @app.get("/")
 async def root() -> dict:
