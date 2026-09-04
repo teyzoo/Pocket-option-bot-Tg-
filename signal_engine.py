@@ -101,9 +101,7 @@ class SignalEngine:
 
         try:
             prepared = calculate_indicators(df)
-            indicators = latest_indicators(
-                prepared
-            )
+            indicators = latest_indicators(prepared)
         except Exception as exc:
             self._reject(
                 pair,
@@ -146,18 +144,10 @@ class SignalEngine:
         rsi = number("rsi")
         macd = number("macd")
         macd_signal = number("macd_signal")
-        macd_histogram = number(
-            "macd_histogram"
-        )
-        bb_middle = number(
-            "bollinger_middle"
-        )
-        stochastic_k = number(
-            "stochastic_k"
-        )
-        stochastic_d = number(
-            "stochastic_d"
-        )
+        macd_histogram = number("macd_histogram")
+        bb_middle = number("bollinger_middle")
+        stochastic_k = number("stochastic_k")
+        stochastic_d = number("stochastic_d")
         price = number("price")
 
         required = (
@@ -174,10 +164,7 @@ class SignalEngine:
             price,
         )
 
-        if any(
-            value is None
-            for value in required
-        ):
+        if any(value is None for value in required):
             self._reject(
                 pair,
                 expiry,
@@ -187,38 +174,40 @@ class SignalEngine:
 
         bullish_score = 0.0
         bearish_score = 0.0
-        confirmations: list[str] = []
+
+        bullish_confirmations: list[str] = []
+        bearish_confirmations: list[str] = []
 
         if ema_fast > ema_slow:
             bullish_score += EMA_SCORE
-            confirmations.append(
+            bullish_confirmations.append(
                 "EMA 9 выше EMA 21"
             )
         elif ema_fast < ema_slow:
             bearish_score += EMA_SCORE
-            confirmations.append(
+            bearish_confirmations.append(
                 "EMA 9 ниже EMA 21"
             )
 
         if price > ema_trend:
             bullish_score += TREND_SCORE
-            confirmations.append(
+            bullish_confirmations.append(
                 "Цена выше EMA 50"
             )
         elif price < ema_trend:
             bearish_score += TREND_SCORE
-            confirmations.append(
+            bearish_confirmations.append(
                 "Цена ниже EMA 50"
             )
 
         if rsi >= 55:
             bullish_score += RSI_SCORE
-            confirmations.append(
+            bullish_confirmations.append(
                 f"RSI {rsi:.1f} bullish"
             )
         elif rsi <= 45:
             bearish_score += RSI_SCORE
-            confirmations.append(
+            bearish_confirmations.append(
                 f"RSI {rsi:.1f} bearish"
             )
 
@@ -227,7 +216,7 @@ class SignalEngine:
             and macd_histogram > 0
         ):
             bullish_score += MACD_SCORE
-            confirmations.append(
+            bullish_confirmations.append(
                 "MACD bullish"
             )
         elif (
@@ -235,54 +224,52 @@ class SignalEngine:
             and macd_histogram < 0
         ):
             bearish_score += MACD_SCORE
-            confirmations.append(
+            bearish_confirmations.append(
                 "MACD bearish"
             )
 
         if price > bb_middle:
             bullish_score += BOLLINGER_SCORE
-            confirmations.append(
+            bullish_confirmations.append(
                 "Цена выше средней BB"
             )
         elif price < bb_middle:
             bearish_score += BOLLINGER_SCORE
-            confirmations.append(
+            bearish_confirmations.append(
                 "Цена ниже средней BB"
             )
 
         if stochastic_k > stochastic_d:
             bullish_score += STOCHASTIC_SCORE
-            confirmations.append(
+            bullish_confirmations.append(
                 "Stochastic bullish"
             )
         elif stochastic_k < stochastic_d:
             bearish_score += STOCHASTIC_SCORE
-            confirmations.append(
+            bearish_confirmations.append(
                 "Stochastic bearish"
             )
 
         last_open = float(
             prepared.iloc[-1]["open"]
         )
+
         last_close = float(
             prepared.iloc[-1]["close"]
         )
 
         if last_close > last_open:
             bullish_score += PRICE_ACTION_SCORE
-            confirmations.append(
+            bullish_confirmations.append(
                 "Последняя свеча bullish"
             )
         elif last_close < last_open:
             bearish_score += PRICE_ACTION_SCORE
-            confirmations.append(
+            bearish_confirmations.append(
                 "Последняя свеча bearish"
             )
 
-        if (
-            bullish_score <= 0
-            and bearish_score <= 0
-        ):
+        if bullish_score <= 0 and bearish_score <= 0:
             self._reject(
                 pair,
                 expiry,
@@ -302,24 +289,43 @@ class SignalEngine:
             direction = "UP"
             score = bullish_score
             opposite = bearish_score
+            confirmations = bullish_confirmations
         else:
             direction = "DOWN"
             score = bearish_score
             opposite = bullish_score
+            confirmations = bearish_confirmations
 
-        conflict = opposite / max(
-            score,
+        total_score = (
+            EMA_SCORE
+            + TREND_SCORE
+            + RSI_SCORE
+            + MACD_SCORE
+            + BOLLINGER_SCORE
+            + STOCHASTIC_SCORE
+            + PRICE_ACTION_SCORE
+        )
+
+        dominance = (
+            score - opposite
+        ) / max(
+            total_score,
             1.0,
         )
 
         quality = clamp(
-            score - conflict * 15.0,
+            50.0 + dominance * 50.0,
             0.0,
             100.0,
         )
 
         confidence = clamp(
-            score / 85.0 * 100.0,
+            50.0
+            + (
+                score
+                / max(total_score, 1.0)
+                * 50.0
+            ),
             0.0,
             100.0,
         )
@@ -364,6 +370,7 @@ class SignalEngine:
                 probability_calibrator.estimate(
                     prepared,
                     expiry,
+                    direction=direction,
                 )
             )
         except Exception as exc:
@@ -406,18 +413,10 @@ class SignalEngine:
         created_at = utc_now()
 
         metadata = {
-            "winrate_trades": int(
-                probability.trades
-            ),
-            "winrate_wins": int(
-                probability.wins
-            ),
-            "winrate_losses": int(
-                probability.losses
-            ),
-            "winrate_draws": int(
-                probability.draws
-            ),
+            "winrate_trades": int(probability.trades),
+            "winrate_wins": int(probability.wins),
+            "winrate_losses": int(probability.losses),
+            "winrate_draws": int(probability.draws),
         }
 
         candidate = SignalCandidate(
