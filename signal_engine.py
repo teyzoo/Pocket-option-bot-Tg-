@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
-from backtest import evaluate_row, run_backtest
+from backtest import run_backtest
 from config import (
     MAX_EXPIRY_MINUTES,
     MIN_CANDLES,
@@ -17,71 +17,19 @@ from config import (
 )
 from indicators import calculate_indicators
 from models import SignalCandidate
-from probability import ProbabilityCalibrator
+from strategy_engine import StrategyAnalysis, StrategyEngine
 
 
-logger = logging.getLogger(
-    "signal_engine"
-)
+logger = logging.getLogger("signal_engine")
 
 
 class SignalEngine:
-    """
-    Главный движок сигналов.
 
-    Для сигнала необходимо:
-
-    - достаточно свечей;
-    - направление UP/DOWN;
-    - минимум подтверждений;
-    - текущая confidence >= 75%;
-    - минимум 10 исторических результативных сделок;
-    - исторический WINRATE >= 75%.
-
-    Calibrator используется как дополнительная
-    статистика и не является вторым жёстким фильтром.
-    """
-
-    def __init__(
-        self,
-        calibrator: Optional[
-            ProbabilityCalibrator
-        ] = None,
-    ) -> None:
-
-        self.calibrator = (
-            calibrator
-            or ProbabilityCalibrator()
-        )
+    def __init__(self) -> None:
+        self.strategy_engine = StrategyEngine()
 
     @staticmethod
-    def _normalize_expiry(
-        expiry_minutes: int,
-    ) -> Optional[int]:
-
-        try:
-            expiry = int(
-                expiry_minutes
-            )
-        except (
-            TypeError,
-            ValueError,
-        ):
-            return None
-
-        if expiry < 1:
-            return None
-
-        if (
-            expiry
-            > MAX_EXPIRY_MINUTES
-        ):
-            return None
-
-        return expiry
-
-    @staticmethod
-    def _prepare_dataframe(
+    def _prepare(
         df: pd.DataFrame,
     ) -> Optional[pd.DataFrame]:
 
@@ -90,48 +38,38 @@ class SignalEngine:
 
         data = df.copy()
 
-        required_price_columns = {
+        required = {
             "open",
             "high",
             "low",
             "close",
         }
 
-        if not required_price_columns.issubset(
+        if not required.issubset(
             set(data.columns)
         ):
-
-            logger.warning(
-                "SignalEngine: missing OHLC columns"
-            )
-
             return None
 
         if "datetime" in data.columns:
 
-            data["datetime"] = (
-                pd.to_datetime(
-                    data["datetime"],
-                    utc=True,
-                    errors="coerce",
-                )
+            data["datetime"] = pd.to_datetime(
+                data["datetime"],
+                utc=True,
+                errors="coerce",
             )
 
-        for column in (
+        for column in [
             "open",
             "high",
             "low",
             "close",
             "volume",
-        ):
+        ]:
 
             if column in data.columns:
-
-                data[column] = (
-                    pd.to_numeric(
-                        data[column],
-                        errors="coerce",
-                    )
+                data[column] = pd.to_numeric(
+                    data[column],
+                    errors="coerce",
                 )
 
         data = data.dropna(
@@ -143,36 +81,14 @@ class SignalEngine:
             ]
         )
 
-        if data.empty:
-            return None
-
         if "datetime" in data.columns:
-
-            data = (
-                data
-                .sort_values(
-                    "datetime"
-                )
-                .drop_duplicates(
-                    subset=["datetime"],
-                    keep="last",
-                )
-                .reset_index(
-                    drop=True
-                )
+            data = data.sort_values(
+                "datetime"
             )
 
-        else:
-
-            data = (
-                data
-                .reset_index(
-                    drop=True
-                )
-            )
-
-        if len(data) < MIN_CANDLES:
-            return None
+        data = data.reset_index(
+            drop=True
+        )
 
         indicator_columns = {
             "ema_fast",
@@ -190,7 +106,6 @@ class SignalEngine:
         if not indicator_columns.issubset(
             set(data.columns)
         ):
-
             data = calculate_indicators(
                 data
             )
@@ -201,76 +116,66 @@ class SignalEngine:
         return data
 
     @staticmethod
-    def _quality_score(
-        confidence: float,
+    def _quality(
+        strategy: StrategyAnalysis,
         winrate: float,
-        confirmations: int,
     ) -> float:
 
-        confidence_component = min(
-            100.0,
-            max(
-                0.0,
-                float(confidence),
-            ),
+        strategy_component = (
+            strategy.confidence
         )
 
         winrate_component = min(
             100.0,
             max(
                 0.0,
-                float(winrate),
+                winrate,
             ),
         )
 
         confirmation_component = min(
             100.0,
-            max(
-                0.0,
-                (
-                    float(confirmations)
-                    / 7.0
-                    * 100.0
-                ),
+            (
+                strategy.confirmations
+                / 7.0
+                * 100.0
             ),
         )
 
-        quality = (
-            confidence_component * 0.35
+        value = (
+            strategy_component * 0.35
             + winrate_component * 0.50
             + confirmation_component * 0.15
         )
 
         return round(
-            min(
-                100.0,
-                quality,
-            ),
+            min(100.0, value),
             2,
         )
 
-    @staticmethod
-    def _candidate_sort_key(
-        candidate: SignalCandidate,
-    ):
+    def _backtest_expiries(
+        self,
+        data: pd.DataFrame,
+        direction: str,
+    ) -> Dict[int, Any]:
 
-        return (
-            float(
-                candidate.winrate
-            ),
-            float(
-                candidate.quality
-            ),
-            float(
-                candidate.confidence
-            ),
-            int(
-                candidate.confirmations
-            ),
-            int(
-                candidate.winrate_trades
-            ),
-        )
+        results = {}
+
+        for expiry in range(
+            1,
+            MAX_EXPIRY_MINUTES + 1,
+        ):
+
+            result = run_backtest(
+                data,
+                expiry_minutes=expiry,
+                direction=direction,
+            )
+
+            if result.decisive_trades >= 10:
+                results[expiry] = result
+
+        return results
 
     def analyze(
         self,
@@ -279,414 +184,313 @@ class SignalEngine:
         df: pd.DataFrame,
         expiry_minutes: int,
         source: str = "manual",
-    ) -> Optional[
-        SignalCandidate
-    ]:
-
-        expiry = (
-            self._normalize_expiry(
-                expiry_minutes
-            )
-        )
-
-        if expiry is None:
-
-            logger.warning(
-                "%s | invalid expiry=%s",
-                pair,
-                expiry_minutes,
-            )
-
-            return None
-
-        prepared = (
-            self._prepare_dataframe(
-                df
-            )
-        )
-
-        if prepared is None:
-
-            logger.info(
-                "%s | insufficient/invalid "
-                "candle data",
-                pair,
-            )
-
-            return None
+    ) -> Optional[SignalCandidate]:
 
         try:
-
-            current_row = (
-                prepared.iloc[-1]
+            expiry = int(
+                expiry_minutes
             )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None
 
-            (
-                direction,
-                confirmations,
-                confidence,
-                reasons,
-            ) = evaluate_row(
-                current_row
+        if not (
+            1
+            <= expiry
+            <= MAX_EXPIRY_MINUTES
+        ):
+            return None
+
+        data = self._prepare(df)
+
+        if data is None:
+            return None
+
+        strategy = (
+            self.strategy_engine.analyze(
+                data
             )
+        )
 
-            if direction is None:
+        direction = strategy.direction
 
-                logger.info(
-                    "%s | no direction "
-                    "from current candle",
-                    pair,
-                )
+        if direction is None:
+            return None
 
-                return None
+        if (
+            strategy.confirmations
+            < MIN_SIGNAL_CONFIRMATIONS
+        ):
+            return None
 
-            if (
-                confirmations
-                < MIN_SIGNAL_CONFIRMATIONS
-            ):
+        if (
+            strategy.confidence
+            < MIN_SIGNAL_CONFIDENCE
+        ):
+            return None
 
-                logger.info(
-                    "%s | rejected: "
-                    "confirmations=%s < %s",
-                    pair,
-                    confirmations,
-                    MIN_SIGNAL_CONFIRMATIONS,
-                )
+        result = run_backtest(
+            data,
+            expiry_minutes=expiry,
+            direction=direction,
+        )
 
-                return None
+        if result.decisive_trades < 10:
+            return None
 
-            if (
-                confidence
-                < MIN_SIGNAL_CONFIDENCE
-            ):
+        winrate = result.winrate
 
-                logger.info(
-                    "%s | rejected: "
-                    "confidence=%.2f < %.2f",
-                    pair,
-                    confidence,
-                    MIN_SIGNAL_CONFIDENCE,
-                )
+        if winrate < MIN_SIGNAL_WINRATE:
+            return None
 
-                return None
+        quality = self._quality(
+            strategy,
+            winrate,
+        )
 
-            backtest = run_backtest(
-                prepared,
-                expiry_minutes=expiry,
-                direction=direction,
+        if quality < MIN_SIGNAL_QUALITY:
+            return None
+
+        row = data.iloc[-1]
+
+        entry_price = float(
+            row["close"]
+        )
+
+        created_at = datetime.now(
+            timezone.utc
+        )
+
+        expires_at = (
+            created_at
+            + timedelta(
+                minutes=expiry
             )
+        )
 
-            trades = (
-                backtest.decisive_trades
-            )
+        indicators: Dict[
+            str,
+            Any,
+        ] = {}
 
-            historical_winrate = (
-                backtest.winrate
-            )
+        for name in [
+            "ema_fast",
+            "ema_slow",
+            "ema_trend",
+            "rsi",
+            "macd",
+            "macd_signal",
+            "macd_histogram",
+            "bollinger_middle",
+            "bollinger_upper",
+            "bollinger_lower",
+            "stochastic_k",
+            "stochastic_d",
+            "atr",
+        ]:
 
-            if trades < 10:
-
-                logger.info(
-                    "%s | %s min | rejected: "
-                    "only %s historical trades",
-                    pair,
-                    expiry,
-                    trades,
-                )
-
-                return None
-
-            if (
-                historical_winrate
-                < MIN_SIGNAL_WINRATE
-            ):
-
-                logger.info(
-                    "%s | %s min | rejected: "
-                    "historical winrate %.2f%% < %.2f%%",
-                    pair,
-                    expiry,
-                    historical_winrate,
-                    MIN_SIGNAL_WINRATE,
-                )
-
-                return None
-
-            calibrated_probability = None
+            if name not in row:
+                continue
 
             try:
+                value = row[name]
 
-                calibrated_probability = (
-                    self.calibrator.calibrate(
-                        historical_winrate
+                if not pd.isna(value):
+                    indicators[name] = float(
+                        value
                     )
-                )
-
-            except TypeError:
-
-                try:
-
-                    calibrated_probability = (
-                        self.calibrator.calibrate(
-                            historical_winrate,
-                            trades,
-                        )
-                    )
-
-                except Exception:
-
-                    calibrated_probability = None
-
             except Exception:
+                pass
 
-                calibrated_probability = None
+        strategy_details = []
 
-            quality = (
-                self._quality_score(
-                    confidence=confidence,
-                    winrate=historical_winrate,
-                    confirmations=confirmations,
-                )
+        for item in strategy.strategies:
+
+            strategy_details.append(
+                {
+                    "name": item.name,
+                    "direction": item.direction,
+                    "score": item.score,
+                    "confidence": item.confidence,
+                    "reason": item.reason,
+                }
             )
 
-            if (
-                MIN_SIGNAL_QUALITY > 0
-                and quality
-                < MIN_SIGNAL_QUALITY
-            ):
+        metadata = {
+            "strategy_engine": True,
+            "strategy_score_up": strategy.score_up,
+            "strategy_score_down": strategy.score_down,
+            "strategy_confidence": strategy.confidence,
+            "strategy_confirmations": strategy.confirmations,
+            "strategies": strategy_details,
+            "historical_total": result.total,
+            "historical_wins": result.wins,
+            "historical_losses": result.losses,
+            "historical_draws": result.draws,
+            "historical_winrate": winrate,
+            "minimum_winrate": MIN_SIGNAL_WINRATE,
+            "minimum_trades": 10,
+        }
 
-                logger.info(
-                    "%s | %s min | rejected: "
-                    "quality %.2f < %.2f",
-                    pair,
-                    expiry,
-                    quality,
-                    MIN_SIGNAL_QUALITY,
-                )
+        candidate = SignalCandidate(
+            pair=pair,
+            direction=direction,
+            expiry_minutes=expiry,
+            confidence=round(
+                strategy.confidence,
+                2,
+            ),
+            quality=quality,
+            winrate=round(
+                winrate,
+                2,
+            ),
+            entry_price=entry_price,
+            created_at=created_at,
+            expires_at=expires_at,
+            source=source,
+            market=market,
+            reasons=strategy.reasons,
+            confirmations=strategy.confirmations,
+            indicators=indicators,
+            chart_path=None,
+            metadata=metadata,
+            winrate_trades=result.decisive_trades,
+            wins=result.wins,
+            losses=result.losses,
+            draws=result.draws,
+        )
 
-                return None
+        logger.info(
+            "%s | SIGNAL | %s | %sm | "
+            "strategy=%.2f | quality=%.2f | "
+            "winrate=%.2f | trades=%s",
+            pair,
+            direction,
+            expiry,
+            strategy.confidence,
+            quality,
+            winrate,
+            result.decisive_trades,
+        )
 
-            entry_price = float(
-                current_row["close"]
-            )
-
-            created_at = datetime.now(
-                timezone.utc
-            )
-
-            expires_at = (
-                created_at
-                + timedelta(
-                    minutes=expiry
-                )
-            )
-
-            metadata: Dict[
-                str,
-                Any,
-            ] = {
-
-                "historical_total": (
-                    backtest.total
-                ),
-
-                "historical_wins": (
-                    backtest.wins
-                ),
-
-                "historical_losses": (
-                    backtest.losses
-                ),
-
-                "historical_draws": (
-                    backtest.draws
-                ),
-
-                "historical_decisive": (
-                    trades
-                ),
-
-                "historical_winrate": (
-                    historical_winrate
-                ),
-
-                "calibrated_probability": (
-                    calibrated_probability
-                ),
-
-                "min_required_winrate": (
-                    MIN_SIGNAL_WINRATE
-                ),
-
-                "min_required_trades": 10,
-
-                "min_confirmations": (
-                    MIN_SIGNAL_CONFIRMATIONS
-                ),
-
-                "source": source,
-            }
-
-            indicators: Dict[
-                str,
-                Any,
-            ] = {}
-
-            indicator_names = [
-                "ema_fast",
-                "ema_slow",
-                "ema_trend",
-                "rsi",
-                "macd",
-                "macd_signal",
-                "macd_histogram",
-                "bollinger_middle",
-                "bollinger_upper",
-                "bollinger_lower",
-                "stochastic_k",
-                "stochastic_d",
-                "atr",
-                "candle_body",
-                "upper_wick",
-                "lower_wick",
-            ]
-
-            for name in indicator_names:
-
-                if name not in current_row:
-                    continue
-
-                value = current_row[name]
-
-                try:
-
-                    if pd.isna(value):
-                        continue
-
-                    indicators[name] = (
-                        float(value)
-                    )
-
-                except (
-                    TypeError,
-                    ValueError,
-                ):
-
-                    indicators[name] = value
-
-            candidate = SignalCandidate(
-                pair=pair,
-                direction=direction,
-                expiry_minutes=expiry,
-                confidence=round(
-                    float(confidence),
-                    2,
-                ),
-                quality=quality,
-                winrate=round(
-                    float(
-                        historical_winrate
-                    ),
-                    2,
-                ),
-                entry_price=entry_price,
-                created_at=created_at,
-                expires_at=expires_at,
-                source=source,
-                market=market,
-                reasons=reasons,
-                confirmations=int(
-                    confirmations
-                ),
-                indicators=indicators,
-                chart_path=None,
-                metadata=metadata,
-                winrate_trades=trades,
-                wins=backtest.wins,
-                losses=backtest.losses,
-                draws=backtest.draws,
-            )
-
-            logger.info(
-                "%s | SIGNAL FOUND | %s | "
-                "expiry=%sm | confidence=%.2f | "
-                "quality=%.2f | historical=%.2f%% | "
-                "trades=%s | confirmations=%s",
-                pair,
-                direction,
-                expiry,
-                confidence,
-                quality,
-                historical_winrate,
-                trades,
-                confirmations,
-            )
-
-            return candidate
-
-        except Exception:
-
-            logger.exception(
-                "%s | SignalEngine analyze failed",
-                pair,
-            )
-
-            return None
+        return candidate
 
     def find_best(
         self,
         candidates,
-    ) -> Optional[
-        SignalCandidate
-    ]:
+    ) -> Optional[SignalCandidate]:
 
         valid = [
-            candidate
-            for candidate in candidates
-            if candidate is not None
+            item
+            for item in candidates
+            if item is not None
         ]
 
         if not valid:
             return None
 
         valid.sort(
-            key=self._candidate_sort_key,
+            key=lambda item: (
+                float(item.quality),
+                float(item.winrate),
+                float(item.confidence),
+                int(item.confirmations),
+                int(item.winrate_trades),
+            ),
             reverse=True,
         )
 
         return valid[0]
 
-    def analyze_many_expiries(
+    def analyze_any_time(
         self,
         pair: str,
         market: str,
         df: pd.DataFrame,
         source: str = "manual",
-        min_expiry: int = 1,
-        max_expiry: Optional[int] = None,
-    ):
+    ) -> Optional[SignalCandidate]:
 
-        if max_expiry is None:
+        data = self._prepare(df)
 
-            max_expiry = (
-                MAX_EXPIRY_MINUTES
+        if data is None:
+            return None
+
+        strategy = (
+            self.strategy_engine.analyze(
+                data
             )
-
-        min_expiry = max(
-            1,
-            int(min_expiry),
         )
 
-        max_expiry = min(
-            MAX_EXPIRY_MINUTES,
-            int(max_expiry),
+        if strategy.direction is None:
+            return None
+
+        if (
+            strategy.confirmations
+            < MIN_SIGNAL_CONFIRMATIONS
+        ):
+            return None
+
+        if (
+            strategy.confidence
+            < MIN_SIGNAL_CONFIDENCE
+        ):
+            return None
+
+        direction = strategy.direction
+
+        results = self._backtest_expiries(
+            data,
+            direction,
         )
 
         candidates = []
 
+        for expiry, result in results.items():
+
+            if result.winrate < MIN_SIGNAL_WINRATE:
+                continue
+
+            quality = self._quality(
+                strategy,
+                result.winrate,
+            )
+
+            if quality < MIN_SIGNAL_QUALITY:
+                continue
+
+            candidate = self.analyze(
+                pair=pair,
+                market=market,
+                df=data,
+                expiry_minutes=expiry,
+                source=source,
+            )
+
+            if candidate is not None:
+                candidates.append(
+                    candidate
+                )
+
+        return self.find_best(
+            candidates
+        )
+
+    def analyze_all_expiries(
+        self,
+        pair: str,
+        market: str,
+        df: pd.DataFrame,
+        source: str = "manual",
+    ):
+
+        candidates = []
+
         for expiry in range(
-            min_expiry,
-            max_expiry + 1,
+            1,
+            MAX_EXPIRY_MINUTES + 1,
         ):
 
             candidate = self.analyze(
