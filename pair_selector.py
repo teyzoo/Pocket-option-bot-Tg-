@@ -80,3 +80,17 @@ class PairSelector:
         market: str = MARKET_REGULAR,
     ) -> tuple[str, ...]:
         return self.available_pairs(market)
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible module-level instance.
+#
+# Existing modules import:
+#     from pair_selector import pair_selector
+#
+# Keep the class above intact and expose a shared instance so both APIs work:
+#     PairSelector()
+#     pair_selector.available_pairs(...)
+# ---------------------------------------------------------------------------
+
+pair_selector = PairSelector()
