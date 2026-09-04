@@ -5,13 +5,10 @@ import logging
 
 from aiogram import Bot
 
-from config import AUTO_SIGNAL_INTERVAL_MINUTES
-
-try:
-    from config import MAX_AUTO_SCAN_PAIRS
-except ImportError:
-    MAX_AUTO_SCAN_PAIRS = 8
-
+from config import (
+    AUTO_SIGNAL_INTERVAL_MINUTES,
+    MAX_AUTO_SCAN_PAIRS,
+)
 from services import get_approved_auto_users
 from settings_service import (
     get_bool_setting,
@@ -27,31 +24,10 @@ from time_utils import (
     seconds_until,
 )
 
-
 logger = logging.getLogger(__name__)
 
 
 class SignalScheduler:
-    """
-    Планировщик автоматических сигналов.
-
-    Основная схема:
-
-        scheduler
-            ↓
-        SignalScanner
-            ↓
-        MarketClient
-            ↓
-        SignalEngine
-            ↓
-        SignalCandidate
-            ↓
-        DB
-            ↓
-        Telegram users
-    """
-
     def __init__(
         self,
         bot: Bot,
@@ -59,31 +35,20 @@ class SignalScheduler:
         market=None,
         engine=None,
     ) -> None:
+
         self.bot = bot
 
-        # ----------------------------------------------------
-        # Если scanner передан — используем его.
-        # ----------------------------------------------------
-
-        if scanner is not None:
-            self.scanner = scanner
-
-        # ----------------------------------------------------
-        # Совместимость со старым main.py.
-        # ----------------------------------------------------
-
-        else:
-            self.scanner = SignalScanner(
+        self.scanner = (
+            scanner
+            if scanner is not None
+            else SignalScanner(
                 market=market,
                 engine=engine,
             )
+        )
 
         self._running = False
         self._task: asyncio.Task | None = None
-
-    # ========================================================
-    # START
-    # ========================================================
 
     async def start(self) -> None:
         if self._running:
@@ -100,10 +65,6 @@ class SignalScheduler:
             "Signal scheduler started"
         )
 
-    # ========================================================
-    # STOP
-    # ========================================================
-
     async def stop(self) -> None:
         self._running = False
 
@@ -116,7 +77,7 @@ class SignalScheduler:
                 pass
             except Exception:
                 logger.exception(
-                    "Signal scheduler task stopped with error"
+                    "Signal scheduler stopped with error"
                 )
 
             self._task = None
@@ -125,21 +86,7 @@ class SignalScheduler:
             "Signal scheduler stopped"
         )
 
-    # ========================================================
-    # COMPATIBILITY RUN
-    # ========================================================
-
     async def run(self) -> None:
-        """
-        Совместимость со старым main.py.
-
-        Можно использовать:
-
-            await scheduler.run()
-
-        Новый main.py использует start()/stop().
-        """
-
         await self.start()
 
         if self._task is None:
@@ -149,10 +96,6 @@ class SignalScheduler:
             await self._task
         except asyncio.CancelledError:
             pass
-
-    # ========================================================
-    # LOOP
-    # ========================================================
 
     async def _run_loop(self) -> None:
         while self._running:
@@ -192,24 +135,13 @@ class SignalScheduler:
                     "Unhandled scheduler error"
                 )
 
-                await asyncio.sleep(
-                    10
-                )
-
-    # ========================================================
-    # INTERVAL
-    # ========================================================
+                await asyncio.sleep(10)
 
     async def _get_interval(self) -> int:
         value = await get_int_setting(
             "auto_signals.interval_minutes",
             AUTO_SIGNAL_INTERVAL_MINUTES,
         )
-
-        # ----------------------------------------------------
-        # По ТЗ:
-        # 1–20 минут.
-        # ----------------------------------------------------
 
         return max(
             1,
@@ -219,21 +151,7 @@ class SignalScheduler:
             ),
         )
 
-    # ========================================================
-    # RUN ONCE
-    # ========================================================
-
     async def run_once(self) -> int:
-        """
-        Один автоматический цикл поиска сигнала.
-
-        Возвращает количество пользователей,
-        которым реально отправлен сигнал.
-        """
-
-        # ----------------------------------------------------
-        # Проверяем глобальный переключатель.
-        # ----------------------------------------------------
 
         enabled = await get_bool_setting(
             "auto_signals.enabled",
@@ -242,14 +160,9 @@ class SignalScheduler:
 
         if not enabled:
             logger.info(
-                "Automatic signals disabled by owner"
+                "Automatic signals disabled"
             )
             return 0
-
-        # ----------------------------------------------------
-        # Получаем пользователей,
-        # включивших автоматические сигналы.
-        # ----------------------------------------------------
 
         users = await get_approved_auto_users()
 
@@ -258,10 +171,6 @@ class SignalScheduler:
                 "No users enabled for automatic signals"
             )
             return 0
-
-        # ----------------------------------------------------
-        # Максимальное количество пар.
-        # ----------------------------------------------------
 
         max_pairs = await get_int_setting(
             "auto_signals.max_pairs",
@@ -275,13 +184,6 @@ class SignalScheduler:
                 int(max_pairs),
             ),
         )
-
-        # ----------------------------------------------------
-        # Ищем сигнал.
-        #
-        # expiry_minutes="any" означает:
-        # scanner самостоятельно проверяет 1..20 минут.
-        # ----------------------------------------------------
 
         try:
             candidate = await self.scanner.scan(
@@ -297,30 +199,15 @@ class SignalScheduler:
             )
             return 0
 
-        # ----------------------------------------------------
-        # Сильного сигнала нет.
-        # ----------------------------------------------------
-
         if candidate is None:
             logger.info(
                 "No qualifying automatic signal found"
             )
             return 0
 
-        # ----------------------------------------------------
-        # Сохраняем сигнал.
-        # ----------------------------------------------------
-
         signal = await save_signal(
             candidate
         )
-
-        # ----------------------------------------------------
-        # chart_path опционален.
-        #
-        # Если модель когда-нибудь получит это поле —
-        # используем его.
-        # ----------------------------------------------------
 
         chart_path = getattr(
             candidate,
@@ -328,18 +215,10 @@ class SignalScheduler:
             None,
         )
 
-        # ----------------------------------------------------
-        # Telegram IDs.
-        # ----------------------------------------------------
-
         telegram_ids = [
             int(user.telegram_id)
             for user in users
         ]
-
-        # ----------------------------------------------------
-        # Рассылка.
-        # ----------------------------------------------------
 
         sent = await broadcast_signal(
             bot=self.bot,
@@ -363,13 +242,10 @@ class SignalScheduler:
         return sent
 
 
-# ============================================================
-# ONE-SHOT HELPER
-# ============================================================
-
 async def run_scheduler_once(
     bot: Bot,
 ) -> int:
+
     scheduler = SignalScheduler(
         bot=bot,
     )
