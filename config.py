@@ -68,6 +68,7 @@ def _get_bool(
         "y",
         "on",
         "да",
+        "enabled",
     }:
         return True
 
@@ -78,6 +79,7 @@ def _get_bool(
         "n",
         "off",
         "нет",
+        "disabled",
     }:
         return False
 
@@ -95,9 +97,57 @@ def _get_list(
 
     return [
         item.strip()
-        for item in value.split(",")
+        for item in value.replace(";", ",").split(",")
         if item.strip()
     ]
+
+
+def _parse_ids_from_env(
+    *names: str,
+) -> list[int]:
+    """
+    Читает Telegram ID из нескольких ENV.
+
+    Поддерживается:
+
+        ADMIN_IDS=123,456
+        OWNER_IDS=123,456
+        OWNER_ID=123
+
+    Можно использовать:
+        ,
+        ;
+        пробелы
+
+    Все значения объединяются без дублей.
+    """
+
+    result: list[int] = []
+
+    for name in names:
+        raw = os.getenv(name, "")
+
+        if not raw:
+            continue
+
+        raw = raw.replace(";", ",")
+
+        for item in raw.split(","):
+            item = item.strip()
+
+            if not item:
+                continue
+
+            try:
+                value = int(item)
+
+            except (TypeError, ValueError):
+                continue
+
+            if value not in result:
+                result.append(value)
+
+    return result
 
 
 # ============================================================
@@ -125,7 +175,7 @@ DEBUG: Final[bool] = _get_bool(
 # ============================================================
 
 BOT_TOKEN: Final[str] = _get_str(
-    "BOT_TOKEN"
+    "BOT_TOKEN",
 )
 
 if not BOT_TOKEN:
@@ -138,33 +188,51 @@ if not BOT_TOKEN:
 # ADMINS / OWNERS
 # ============================================================
 
-def _parse_admin_ids() -> list[int]:
-    raw = os.getenv(
-        "ADMIN_IDS",
-        "",
+# Администраторы.
+ADMIN_IDS: Final[list[int]] = _parse_ids_from_env(
+    "ADMIN_IDS",
+)
+
+# Владелец.
+#
+# Раньше здесь OWNER_IDS фактически копировался
+# только из ADMIN_IDS.
+#
+# Теперь используются реальные ENV:
+#
+# OWNER_IDS=123456789
+#
+# или:
+#
+# OWNER_ID=123456789
+#
+OWNER_IDS: Final[list[int]] = _parse_ids_from_env(
+    "OWNER_IDS",
+    "OWNER_ID",
+)
+
+# Все привилегированные пользователи.
+#
+# Владелец также является администратором.
+ALL_PRIVILEGED_IDS: Final[list[int]] = list(
+    dict.fromkeys(
+        ADMIN_IDS + OWNER_IDS
     )
+)
 
-    result: list[int] = []
+# Совместимость:
+# старый код может проверять ADMIN_IDS.
+ADMIN_IDS = list(
+    ALL_PRIVILEGED_IDS
+)
 
-    for item in raw.split(","):
-        item = item.strip()
-
-        if not item:
-            continue
-
-        try:
-            result.append(int(item))
-        except ValueError:
-            continue
-
-    return result
-
-
-ADMIN_IDS: Final[list[int]] = _parse_admin_ids()
-
-# Совместимость со старым кодом.
-OWNER_IDS: Final[list[int]] = list(
-    ADMIN_IDS
+# Совместимость:
+# старый код может проверять OWNER_IDS.
+#
+# Администраторы также считаются владельцами
+# для старой логики доступа.
+OWNER_IDS = list(
+    ALL_PRIVILEGED_IDS
 )
 
 
@@ -186,7 +254,7 @@ ACCESS_BLACKLISTED: Final[str] = "blacklisted"
 # ============================================================
 
 DATABASE_URL: Final[str] = _get_str(
-    "DATABASE_URL"
+    "DATABASE_URL",
 )
 
 if not DATABASE_URL:
@@ -229,6 +297,7 @@ DB_POOL_RECYCLE: Final[int] = max(
 
 
 # Старые названия для совместимости.
+
 DATABASE_POOL_SIZE: Final[int] = (
     DB_POOL_SIZE
 )
@@ -251,7 +320,7 @@ DATABASE_POOL_RECYCLE: Final[int] = (
 # ============================================================
 
 TWELVE_DATA_API_KEY: Final[str] = _get_str(
-    "TWELVE_DATA_API_KEY"
+    "TWELVE_DATA_API_KEY",
 )
 
 TWELVE_DATA_BASE_URL: Final[str] = _get_str(
@@ -330,6 +399,7 @@ MAX_CANDLES: Final[int] = max(
 # SIGNAL THRESHOLDS
 # ============================================================
 
+# Минимальный исторический WINRATE.
 MIN_SIGNAL_WINRATE: Final[float] = max(
     0.0,
     min(
@@ -341,6 +411,7 @@ MIN_SIGNAL_WINRATE: Final[float] = max(
     ),
 )
 
+# Минимальная уверенность.
 MIN_SIGNAL_CONFIDENCE: Final[float] = max(
     0.0,
     min(
@@ -352,6 +423,7 @@ MIN_SIGNAL_CONFIDENCE: Final[float] = max(
     ),
 )
 
+# Минимальное качество сигнала.
 MIN_SIGNAL_QUALITY: Final[float] = max(
     0.0,
     min(
@@ -363,6 +435,7 @@ MIN_SIGNAL_QUALITY: Final[float] = max(
     ),
 )
 
+# Минимальное количество подтверждений.
 MIN_SIGNAL_CONFIRMATIONS: Final[int] = max(
     1,
     _get_int(
@@ -583,17 +656,23 @@ AUTO_SIGNAL_INTERVAL_MINUTES: Final[int] = max(
     ),
 )
 
+# Совместимость.
 AUTO_SIGNAL_MINUTES: Final[int] = (
     AUTO_SIGNAL_INTERVAL_MINUTES
 )
 
+
 MAX_AUTO_SCAN_PAIRS: Final[int] = max(
     1,
-    _get_int(
-        "MAX_AUTO_SCAN_PAIRS",
-        8,
+    min(
+        10,
+        _get_int(
+            "MAX_AUTO_SCAN_PAIRS",
+            10,
+        ),
     ),
 )
+
 
 SIGNAL_COOLDOWN_MINUTES: Final[int] = max(
     0,
@@ -602,6 +681,7 @@ SIGNAL_COOLDOWN_MINUTES: Final[int] = max(
         5,
     ),
 )
+
 
 SIGNAL_DEDUPLICATION_MINUTES: Final[int] = max(
     0,
@@ -637,6 +717,9 @@ MAX_EXPIRY_MINUTES: Final[int] = max(
 
 
 # Все разрешённые тайминги:
+#
+# 1, 2, 3 ... 20 минут.
+#
 EXPIRY_MINUTES: Final[list[int]] = list(
     range(
         MIN_EXPIRY_MINUTES,
@@ -657,10 +740,11 @@ RESULT_CHECK_INTERVAL_SECONDS: Final[int] = max(
     ),
 )
 
-# Совместимость со старым названием.
+# Старое название.
 RESULT_CHECKER_INTERVAL_SECONDS: Final[int] = (
     RESULT_CHECK_INTERVAL_SECONDS
 )
+
 
 RESULT_PRICE_TOLERANCE_SECONDS: Final[int] = max(
     0,
@@ -685,6 +769,8 @@ RESULT_DRAW: Final[str] = "DRAW"
 
 RESULT_CANCELLED: Final[str] = "CANCELLED"
 
+
+# Старые названия.
 
 SIGNAL_RESULT_PENDING: Final[str] = (
     RESULT_PENDING
@@ -722,7 +808,7 @@ DEFAULT_MARKET: Final[str] = _get_str(
 
 
 # ============================================================
-# PAIRS
+# NORMAL PAIRS
 # ============================================================
 
 DEFAULT_PAIRS: Final[list[str]] = [
@@ -739,6 +825,10 @@ DEFAULT_PAIRS: Final[list[str]] = [
 ]
 
 
+# ============================================================
+# OTC PAIRS
+# ============================================================
+
 DEFAULT_OTC_PAIRS: Final[list[str]] = [
     "EUR/USD",
     "GBP/USD",
@@ -753,33 +843,70 @@ DEFAULT_OTC_PAIRS: Final[list[str]] = [
 ]
 
 
-PAIRS: Final[list[str]] = _get_list(
-    "PAIRS",
-    DEFAULT_PAIRS,
-)
+# ============================================================
+# PAIR ALIASES
+# ============================================================
 
-
-# Главный список обычных пар.
 NORMAL_PAIRS: Final[list[str]] = list(
-    PAIRS
+    _get_list(
+        "NORMAL_PAIRS",
+        DEFAULT_PAIRS,
+    )
 )
 
 
-OTC_PAIRS: Final[list[str]] = _get_list(
-    "OTC_PAIRS",
-    DEFAULT_OTC_PAIRS,
+OTC_PAIRS: Final[list[str]] = list(
+    _get_list(
+        "OTC_PAIRS",
+        DEFAULT_OTC_PAIRS,
+    )
 )
 
 
-# Совместимость.
-DEFAULT_PAIRS = NORMAL_PAIRS
+# ============================================================
+# PAIR LIMITS
+# ============================================================
+
+MAX_NORMAL_PAIRS: Final[int] = max(
+    1,
+    min(
+        len(NORMAL_PAIRS),
+        _get_int(
+            "MAX_NORMAL_PAIRS",
+            len(NORMAL_PAIRS),
+        ),
+    ),
+)
+
+MAX_OTC_PAIRS: Final[int] = max(
+    1,
+    min(
+        len(OTC_PAIRS),
+        _get_int(
+            "MAX_OTC_PAIRS",
+            len(OTC_PAIRS),
+        ),
+    ),
+)
 
 
-MAX_PAIRS_PER_SCAN: Final[int] = max(
+# ============================================================
+# SEARCH
+# ============================================================
+
+SEARCH_LIMIT_FREE: Final[int] = max(
     1,
     _get_int(
-        "MAX_PAIRS_PER_SCAN",
-        8,
+        "SEARCH_LIMIT_FREE",
+        5,
+    ),
+)
+
+SEARCH_BATCH_LIMIT_PREMIUM: Final[int] = max(
+    1,
+    _get_int(
+        "SEARCH_BATCH_LIMIT_PREMIUM",
+        10,
     ),
 )
 
@@ -788,48 +915,11 @@ MAX_PAIRS_PER_SCAN: Final[int] = max(
 # PROBABILITY / BACKTEST
 # ============================================================
 
-PROBABILITY_MINIMUM_TRADES: Final[int] = max(
+PROBABILITY_MIN_TRADES: Final[int] = max(
     1,
     _get_int(
-        "PROBABILITY_MINIMUM_TRADES",
-        30,
-    ),
-)
-
-PROBABILITY_MINIMUM_WINRATE: Final[float] = max(
-    75.0,
-    min(
-        100.0,
-        _get_float(
-            "PROBABILITY_MINIMUM_WINRATE",
-            75.0,
-        ),
-    ),
-)
-
-
-MIN_PROBABILITY: Final[float] = (
-    PROBABILITY_MINIMUM_WINRATE
-)
-
-MINIMUM_PROBABILITY: Final[float] = (
-    PROBABILITY_MINIMUM_WINRATE
-)
-
-MINIMUM_TRADES: Final[int] = (
-    PROBABILITY_MINIMUM_TRADES
-)
-
-
-# ============================================================
-# BACKTEST
-# ============================================================
-
-BACKTEST_LOOKBACK_CANDLES: Final[int] = max(
-    50,
-    _get_int(
-        "BACKTEST_LOOKBACK_CANDLES",
-        250,
+        "PROBABILITY_MIN_TRADES",
+        10,
     ),
 )
 
@@ -837,42 +927,64 @@ BACKTEST_MIN_TRADES: Final[int] = max(
     1,
     _get_int(
         "BACKTEST_MIN_TRADES",
-        PROBABILITY_MINIMUM_TRADES,
+        10,
     ),
 )
 
-
-# ============================================================
-# SIGNAL ENGINE
-# ============================================================
-
-SIGNAL_ENGINE_LOOKBACK: Final[int] = max(
-    MIN_CANDLES_REQUIRED,
+BACKTEST_MAX_CANDLES: Final[int] = max(
+    100,
     _get_int(
-        "SIGNAL_ENGINE_LOOKBACK",
-        MAX_CANDLES,
+        "BACKTEST_MAX_CANDLES",
+        300,
     ),
 )
 
-SIGNAL_ENGINE_MAX_REASONS: Final[int] = max(
+
+# ============================================================
+# SCANNER
+# ============================================================
+
+SCANNER_MAX_PAIRS: Final[int] = max(
     1,
+    min(
+        10,
+        _get_int(
+            "SCANNER_MAX_PAIRS",
+            10,
+        ),
+    ),
+)
+
+SCANNER_MIN_CANDLES: Final[int] = max(
+    50,
     _get_int(
-        "SIGNAL_ENGINE_MAX_REASONS",
-        8,
+        "SCANNER_MIN_CANDLES",
+        MIN_CANDLES_REQUIRED,
     ),
 )
 
 
 # ============================================================
-# STORAGE / HISTORY
+# LOGGING
 # ============================================================
 
-SIGNAL_HISTORY_LIMIT: Final[int] = max(
-    10,
-    _get_int(
-        "SIGNAL_HISTORY_LIMIT",
-        500,
-    ),
+LOG_LEVEL: Final[str] = _get_str(
+    "LOG_LEVEL",
+    "INFO",
+).upper()
+
+
+# ============================================================
+# TIMEZONE
+# ============================================================
+
+TIMEZONE: Final[str] = _get_str(
+    "TIMEZONE",
+    "Europe/Moscow",
+)
+
+MOSCOW_TIMEZONE: Final[str] = (
+    "Europe/Moscow"
 )
 
 
@@ -889,102 +1001,8 @@ PORT: Final[int] = max(
     1,
     _get_int(
         "PORT",
-        8000,
+        10000,
     ),
-)
-
-HEALTH_PATH: Final[str] = _get_str(
-    "HEALTH_PATH",
-    "/health",
-)
-
-
-# ============================================================
-# TIMEZONE
-# ============================================================
-
-TIMEZONE: Final[str] = _get_str(
-    "TIMEZONE",
-    "Europe/Moscow",
-)
-
-# Старое название, которое может использоваться
-# в существующем коде.
-MOSCOW_TIMEZONE: Final[str] = (
-    TIMEZONE
-)
-
-
-# ============================================================
-# FEATURES
-# ============================================================
-
-ENABLE_MANUAL_SIGNALS: Final[bool] = _get_bool(
-    "ENABLE_MANUAL_SIGNALS",
-    True,
-)
-
-ENABLE_AUTO_SIGNALS: Final[bool] = _get_bool(
-    "ENABLE_AUTO_SIGNALS",
-    True,
-)
-
-ENABLE_RESULT_CHECKER: Final[bool] = _get_bool(
-    "ENABLE_RESULT_CHECKER",
-    True,
-)
-
-ENABLE_OTC: Final[bool] = _get_bool(
-    "ENABLE_OTC",
-    False,
-)
-
-
-# ============================================================
-# LOGGING
-# ============================================================
-
-LOG_LEVEL: Final[str] = _get_str(
-    "LOG_LEVEL",
-    "INFO",
-).upper()
-
-
-# ============================================================
-# HTTP
-# ============================================================
-
-HTTP_TIMEOUT_SECONDS: Final[float] = max(
-    1.0,
-    _get_float(
-        "HTTP_TIMEOUT_SECONDS",
-        20.0,
-    ),
-)
-
-
-# ============================================================
-# SIGNAL DEDUPLICATION
-# ============================================================
-
-SIGNAL_DEDUPLICATION_ENABLED: Final[bool] = _get_bool(
-    "SIGNAL_DEDUPLICATION_ENABLED",
-    True,
-)
-
-
-# ============================================================
-# SAFETY / QUALITY
-# ============================================================
-
-REQUIRE_PROBABILITY: Final[bool] = _get_bool(
-    "REQUIRE_PROBABILITY",
-    True,
-)
-
-REQUIRE_MINIMUM_CONFIRMATIONS: Final[bool] = _get_bool(
-    "REQUIRE_MINIMUM_CONFIRMATIONS",
-    True,
 )
 
 
@@ -992,21 +1010,70 @@ REQUIRE_MINIMUM_CONFIRMATIONS: Final[bool] = _get_bool(
 # COMPATIBILITY
 # ============================================================
 
-MIN_SIGNAL_SCORE: Final[float] = max(
-    MIN_SIGNAL_QUALITY,
-    MIN_SIGNAL_CONFIDENCE,
-    MIN_SIGNAL_WINRATE,
-)
+# Старые/альтернативные названия, которые могли
+# использоваться в предыдущих версиях проекта.
 
-
-MINIMUM_SIGNAL_QUALITY: Final[float] = (
+MIN_SIGNAL_SCORE: Final[float] = (
     MIN_SIGNAL_QUALITY
 )
 
-MINIMUM_SIGNAL_CONFIDENCE: Final[float] = (
+MIN_QUALITY_SCORE: Final[float] = (
+    MIN_SIGNAL_QUALITY
+)
+
+MIN_WINRATE: Final[float] = (
+    MIN_SIGNAL_WINRATE
+)
+
+MIN_CONFIDENCE: Final[float] = (
     MIN_SIGNAL_CONFIDENCE
 )
 
-MINIMUM_SIGNAL_WINRATE: Final[float] = (
-    MIN_SIGNAL_WINRATE
+MIN_CONFIRMATIONS: Final[int] = (
+    MIN_SIGNAL_CONFIRMATIONS
 )
+
+
+# ============================================================
+# STARTUP SUMMARY
+# ============================================================
+
+def get_config_summary() -> dict:
+    """
+    Возвращает безопасную информацию о конфигурации
+    без вывода BOT_TOKEN и DATABASE_URL.
+    """
+
+    return {
+        "app_name": APP_NAME,
+        "app_env": APP_ENV,
+        "debug": DEBUG,
+        "admins_count": len(ADMIN_IDS),
+        "owners_count": len(OWNER_IDS),
+        "privileged_count": len(
+            ALL_PRIVILEGED_IDS
+        ),
+        "database_configured": bool(
+            DATABASE_URL
+        ),
+        "twelve_data_configured": bool(
+            TWELVE_DATA_API_KEY
+        ),
+        "min_winrate": MIN_SIGNAL_WINRATE,
+        "min_confidence": MIN_SIGNAL_CONFIDENCE,
+        "min_quality": MIN_SIGNAL_QUALITY,
+        "min_confirmations": MIN_SIGNAL_CONFIRMATIONS,
+        "auto_enabled": AUTO_SIGNAL_ENABLED,
+        "auto_interval_minutes": (
+            AUTO_SIGNAL_INTERVAL_MINUTES
+        ),
+        "max_auto_pairs": MAX_AUTO_SCAN_PAIRS,
+        "min_expiry_minutes": MIN_EXPIRY_MINUTES,
+        "max_expiry_minutes": MAX_EXPIRY_MINUTES,
+        "normal_pairs_count": len(
+            NORMAL_PAIRS
+        ),
+        "otc_pairs_count": len(
+            OTC_PAIRS
+        ),
+    }
