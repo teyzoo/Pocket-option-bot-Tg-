@@ -109,6 +109,19 @@ def pair_keyboard(
     if row:
         buttons.append(row)
 
+    # ============================================================
+    # ВСЕ ПАРЫ
+    # ============================================================
+
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text="🌐 Все пары",
+                callback_data="pair:ALL",
+            )
+        ]
+    )
+
     buttons.append(
         [
             InlineKeyboardButton(
