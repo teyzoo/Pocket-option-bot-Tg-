@@ -154,6 +154,47 @@ if not DATABASE_URL:
     )
 
 
+# SQLAlchemy connection pool settings.
+DB_POOL_SIZE: Final[int] = max(
+    1,
+    _get_int(
+        "DB_POOL_SIZE",
+        5,
+    ),
+)
+
+DB_MAX_OVERFLOW: Final[int] = max(
+    0,
+    _get_int(
+        "DB_MAX_OVERFLOW",
+        10,
+    ),
+)
+
+DB_POOL_TIMEOUT: Final[int] = max(
+    1,
+    _get_int(
+        "DB_POOL_TIMEOUT",
+        30,
+    ),
+)
+
+DB_POOL_RECYCLE: Final[int] = max(
+    60,
+    _get_int(
+        "DB_POOL_RECYCLE",
+        1800,
+    ),
+)
+
+
+# Compatibility aliases for possible older database code.
+DATABASE_POOL_SIZE: Final[int] = DB_POOL_SIZE
+DATABASE_MAX_OVERFLOW: Final[int] = DB_MAX_OVERFLOW
+DATABASE_POOL_TIMEOUT: Final[int] = DB_POOL_TIMEOUT
+DATABASE_POOL_RECYCLE: Final[int] = DB_POOL_RECYCLE
+
+
 # ============================================================
 # TWELVE DATA
 # ============================================================
@@ -516,7 +557,6 @@ RESULT_CHECK_INTERVAL_SECONDS: Final[int] = max(
     ),
 )
 
-# IMPORTANT:
 # SignalResultChecker imports this exact name.
 RESULT_CHECKER_INTERVAL_SECONDS: Final[int] = (
     RESULT_CHECK_INTERVAL_SECONDS
@@ -540,7 +580,6 @@ RESULT_WIN: Final[str] = "WIN"
 RESULT_LOSS: Final[str] = "LOSS"
 RESULT_DRAW: Final[str] = "DRAW"
 RESULT_CANCELLED: Final[str] = "CANCELLED"
-
 
 # Compatibility aliases.
 SIGNAL_RESULT_PENDING: Final[str] = RESULT_PENDING
@@ -582,7 +621,6 @@ PAIRS: Final[list[str]] = _get_list(
     DEFAULT_PAIRS,
 )
 
-
 MAX_PAIRS_PER_SCAN: Final[int] = max(
     1,
     _get_int(
@@ -616,6 +654,12 @@ PROBABILITY_MINIMUM_WINRATE: Final[float] = max(
 )
 
 
+# Compatibility aliases.
+MIN_PROBABILITY: Final[float] = PROBABILITY_MINIMUM_WINRATE
+MINIMUM_PROBABILITY: Final[float] = PROBABILITY_MINIMUM_WINRATE
+MINIMUM_TRADES: Final[int] = PROBABILITY_MINIMUM_TRADES
+
+
 # ============================================================
 # SIGNAL STORAGE
 # ============================================================
@@ -644,6 +688,11 @@ PORT: Final[int] = max(
         "PORT",
         8000,
     ),
+)
+
+HEALTH_PATH: Final[str] = _get_str(
+    "HEALTH_PATH",
+    "/health",
 )
 
 
@@ -716,16 +765,30 @@ STARTUP_TIMEOUT_SECONDS: Final[int] = max(
 # ============================================================
 
 __all__ = [
+    # Application
     "APP_NAME",
     "APP_ENV",
     "DEBUG",
 
+    # Telegram
     "BOT_TOKEN",
+
+    # Admins
     "ADMIN_IDS",
     "OWNER_IDS",
 
+    # Database
     "DATABASE_URL",
+    "DB_POOL_SIZE",
+    "DB_MAX_OVERFLOW",
+    "DB_POOL_TIMEOUT",
+    "DB_POOL_RECYCLE",
+    "DATABASE_POOL_SIZE",
+    "DATABASE_MAX_OVERFLOW",
+    "DATABASE_POOL_TIMEOUT",
+    "DATABASE_POOL_RECYCLE",
 
+    # Twelve Data
     "TWELVE_DATA_API_KEY",
     "TWELVE_DATA_BASE_URL",
     "TWELVE_DATA_TIMEOUT_SECONDS",
@@ -735,14 +798,17 @@ __all__ = [
     "TWELVE_DATA_MAX_REQUESTS_PER_SCAN",
     "TWELVE_DATA_CACHE_SECONDS",
 
+    # Candles
     "MIN_CANDLES_REQUIRED",
     "MAX_CANDLES",
 
+    # Signal thresholds
     "MIN_SIGNAL_WINRATE",
     "MIN_SIGNAL_CONFIDENCE",
     "MIN_SIGNAL_QUALITY",
     "MIN_SIGNAL_CONFIRMATIONS",
 
+    # Scores
     "EMA_SCORE",
     "TREND_SCORE",
     "RSI_SCORE",
@@ -751,6 +817,7 @@ __all__ = [
     "STOCHASTIC_SCORE",
     "PRICE_ACTION_SCORE",
 
+    # Indicator periods
     "EMA_FAST_PERIOD",
     "EMA_SLOW_PERIOD",
     "EMA_TREND_PERIOD",
@@ -763,6 +830,7 @@ __all__ = [
     "STOCHASTIC_PERIOD",
     "STOCHASTIC_SMOOTHING",
 
+    # Indicator aliases
     "EMA_FAST",
     "EMA_SLOW",
     "EMA_TREND",
@@ -775,6 +843,7 @@ __all__ = [
     "STOCHASTIC_K_PERIOD",
     "STOCHASTIC_D_PERIOD",
 
+    # Automatic signals
     "AUTO_SIGNAL_ENABLED",
     "AUTO_SIGNAL_INTERVAL_MINUTES",
     "AUTO_SIGNAL_MINUTES",
@@ -782,51 +851,67 @@ __all__ = [
     "SIGNAL_COOLDOWN_MINUTES",
     "SIGNAL_DEDUPLICATION_MINUTES",
 
+    # Expiry
     "MIN_EXPIRY_MINUTES",
     "MAX_EXPIRY_MINUTES",
 
+    # Result checker
     "RESULT_CHECK_INTERVAL_SECONDS",
     "RESULT_CHECKER_INTERVAL_SECONDS",
     "RESULT_PRICE_TOLERANCE_SECONDS",
 
+    # Results
     "RESULT_PENDING",
     "RESULT_WIN",
     "RESULT_LOSS",
     "RESULT_DRAW",
     "RESULT_CANCELLED",
-
     "SIGNAL_RESULT_PENDING",
     "SIGNAL_RESULT_WIN",
     "SIGNAL_RESULT_LOSS",
     "SIGNAL_RESULT_DRAW",
     "SIGNAL_RESULT_CANCELLED",
 
+    # Market
     "DEFAULT_MARKET",
 
+    # Pairs
     "DEFAULT_PAIRS",
     "PAIRS",
     "MAX_PAIRS_PER_SCAN",
 
+    # Probability
     "PROBABILITY_MINIMUM_TRADES",
     "PROBABILITY_MINIMUM_WINRATE",
+    "MIN_PROBABILITY",
+    "MINIMUM_PROBABILITY",
+    "MINIMUM_TRADES",
 
+    # Storage
     "SIGNAL_HISTORY_LIMIT",
 
+    # Server
     "HOST",
     "PORT",
+    "HEALTH_PATH",
 
+    # Time
     "TIMEZONE",
     "MOSCOW_TIMEZONE",
 
+    # Access
     "ACCESS_APPROVED",
     "ACCESS_PENDING",
     "ACCESS_BLOCKED",
 
+    # Logging
     "LOG_LEVEL",
 
+    # Features
     "ENABLE_RESULT_CHECKER",
     "ENABLE_AUTO_SIGNALS",
     "ENABLE_MARKET_CACHE",
 
+    # Startup
     "STARTUP_TIMEOUT_SECONDS",
 ]
