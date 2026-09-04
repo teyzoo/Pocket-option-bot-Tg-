@@ -5,33 +5,39 @@ import logging
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from sqlalchemy import func, select
 
-from config import OWNER_IDS
+from config import ALL_PRIVILEGED_IDS
+
 from keyboards import (
     owner_auto_keyboard,
     owner_candle_keyboard,
     owner_keyboard,
     owner_message_keyboard,
 )
+
 from messages import (
     DEFAULT_MESSAGES,
     render_message,
 )
+
 from settings_service import (
     get_message,
     get_setting,
     set_message,
 )
+
 from states import OwnerStates
+
 from candle_filter import CandleFilter
-from database import get_session
-from sqlalchemy import func, select
 
 from database import (
     JoinRequest,
     Signal,
     User,
+    get_session,
 )
+
 
 logger = logging.getLogger(__name__)
 
@@ -43,25 +49,46 @@ candle_filter = CandleFilter()
 def is_owner(
     telegram_id: int,
 ) -> bool:
-    return int(telegram_id) in OWNER_IDS
+
+    try:
+        user_id = int(telegram_id)
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return False
+
+    return user_id in {
+        int(value)
+        for value in ALL_PRIVILEGED_IDS
+    }
 
 
 async def owner_check(
     message: Message,
 ) -> bool:
-    if not is_owner(
-        int(message.from_user.id)
-    ):
+
+    if message.from_user is None:
         return False
 
-    return True
+    return is_owner(
+        message.from_user.id
+    )
 
 
 async def owner_callback_check(
     callback: CallbackQuery,
 ) -> bool:
+
+    if callback.from_user is None:
+        await callback.answer(
+            "Нет доступа",
+            show_alert=True,
+        )
+        return False
+
     if not is_owner(
-        int(callback.from_user.id)
+        callback.from_user.id
     ):
         await callback.answer(
             "Нет доступа",
@@ -78,6 +105,7 @@ async def owner_callback_check(
 async def owner_panel_message(
     message: Message,
 ) -> None:
+
     if not await owner_check(message):
         return
 
@@ -95,12 +123,16 @@ async def owner_panel_message(
 async def owner_panel_callback(
     callback: CallbackQuery,
 ) -> None:
+
     if not await owner_callback_check(
         callback
     ):
         return
 
     await callback.answer()
+
+    if callback.message is None:
+        return
 
     await callback.message.edit_text(
         render_message(
@@ -116,12 +148,16 @@ async def owner_panel_callback(
 async def owner_messages_callback(
     callback: CallbackQuery,
 ) -> None:
+
     if not await owner_callback_check(
         callback
     ):
         return
 
     await callback.answer()
+
+    if callback.message is None:
+        return
 
     keys = list(
         DEFAULT_MESSAGES.keys()
@@ -144,12 +180,16 @@ async def owner_message_select(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
+
     if not await owner_callback_check(
         callback
     ):
         return
 
     await callback.answer()
+
+    if callback.message is None:
+        return
 
     key = callback.data.split(
         ":",
@@ -192,13 +232,16 @@ async def owner_message_save(
     message: Message,
     state: FSMContext,
 ) -> None:
+
     if not await owner_check(message):
         await state.clear()
         return
 
     data = await state.get_data()
 
-    key = data.get("message_key")
+    key = data.get(
+        "message_key"
+    )
 
     if not key:
         await state.clear()
@@ -243,12 +286,16 @@ async def owner_message_save(
 async def owner_candles_callback(
     callback: CallbackQuery,
 ) -> None:
+
     if not await owner_callback_check(
         callback
     ):
         return
 
     await callback.answer()
+
+    if callback.message is None:
+        return
 
     settings = await candle_filter.get_settings()
 
@@ -273,6 +320,7 @@ async def owner_candles_callback(
 async def owner_candle_callback(
     callback: CallbackQuery,
 ) -> None:
+
     if not await owner_callback_check(
         callback
     ):
@@ -280,9 +328,15 @@ async def owner_candle_callback(
 
     await callback.answer()
 
+    if callback.message is None:
+        return
+
     parts = callback.data.split(":")
 
-    if len(parts) == 2 and parts[1] == "disable":
+    if (
+        len(parts) == 2
+        and parts[1] == "disable"
+    ):
         await candle_filter.disable(
             updated_by=int(
                 callback.from_user.id
@@ -334,12 +388,16 @@ async def owner_candle_callback(
 async def owner_auto_callback(
     callback: CallbackQuery,
 ) -> None:
+
     if not await owner_callback_check(
         callback
     ):
         return
 
     await callback.answer()
+
+    if callback.message is None:
+        return
 
     enabled = (
         await get_setting(
@@ -369,12 +427,16 @@ async def owner_auto_callback(
 async def owner_auto_toggle(
     callback: CallbackQuery,
 ) -> None:
+
     if not await owner_callback_check(
         callback
     ):
         return
 
     await callback.answer()
+
+    if callback.message is None:
+        return
 
     current = (
         await get_setting(
@@ -389,7 +451,11 @@ async def owner_auto_toggle(
 
     await set_setting(
         key="auto_signals.enabled",
-        value="true" if new_value else "false",
+        value=(
+            "true"
+            if new_value
+            else "false"
+        ),
         updated_by=int(
             callback.from_user.id
         ),
@@ -416,6 +482,7 @@ async def owner_auto_toggle(
 async def owner_stats_callback(
     callback: CallbackQuery,
 ) -> None:
+
     if not await owner_callback_check(
         callback
     ):
@@ -423,7 +490,11 @@ async def owner_stats_callback(
 
     await callback.answer()
 
+    if callback.message is None:
+        return
+
     async with get_session() as session:
+
         users = await session.scalar(
             select(
                 func.count(User.id)
@@ -476,7 +547,10 @@ async def owner_stats_callback(
             )
         )
 
-    completed = int(wins or 0) + int(losses or 0)
+    completed = (
+        int(wins or 0)
+        + int(losses or 0)
+    )
 
     winrate = (
         int(wins or 0)
@@ -509,12 +583,16 @@ async def owner_broadcast_callback(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
+
     if not await owner_callback_check(
         callback
     ):
         return
 
     await callback.answer()
+
+    if callback.message is None:
+        return
 
     await state.set_state(
         OwnerStates.waiting_broadcast_text
@@ -534,6 +612,7 @@ async def owner_broadcast_message(
     message: Message,
     state: FSMContext,
 ) -> None:
+
     if not await owner_check(message):
         await state.clear()
         return
@@ -553,6 +632,7 @@ async def owner_broadcast_message(
         return
 
     async with get_session() as session:
+
         result = await session.execute(
             select(User).where(
                 User.status == "approved"
@@ -573,7 +653,9 @@ async def owner_broadcast_message(
                 ),
                 text=text,
             )
+
             sent += 1
+
         except Exception:
             logger.exception(
                 "Broadcast failed for %s",
